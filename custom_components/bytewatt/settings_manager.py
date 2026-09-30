@@ -165,6 +165,9 @@ FEEDIN_SLOT_VALIDATORS = {
     "power": _v_feedin_power,
 }
 
+# Only the cycle-strategy API has per-slot power (see CycleStrategy.supports_slot_power)
+SLOT_POWER_FIELDS = ("charge_power", "discharge_power")
+
 
 class SettingsManager:
     """Owns cache + pending diff + submit lifecycle for one config entry."""
@@ -244,7 +247,7 @@ class SettingsManager:
         if field == "enabled":
             return bool(self._feedin_cache.battery_en)
         if field == "cutoff_soc":
-            return float(self._feedin_cache.battery_feed_cutoff_soc)
+            return float(self._feedin_cache.effective_cutoff_soc)
         return default
 
     def effective_feedin_slot(
@@ -272,9 +275,17 @@ class SettingsManager:
             and slot_index < len(self._feedin_cache.slots)
         )
 
+    def battery_field_supported(self, field: str) -> bool:
+        """False when the system's settings API can't hold this field.
+
+        Unknown until the first fetch, so an empty cache reports True.
+        """
+        c = self._battery_cache
+        return c is None or c.supports_slot_power or field not in SLOT_POWER_FIELDS
+
     def _read_battery_from_cache(self, field: str, default: Any) -> Any:
         c = self._battery_cache
-        if c is None:
+        if c is None or not self.battery_field_supported(field):
             return default
         if field == "minimum_soc":
             return c.bat_use_cap
@@ -307,9 +318,16 @@ class SettingsManager:
         if field not in BATTERY_VALIDATORS:
             raise SettingsValidationError(f"Unknown battery field: {field}")
         validated = BATTERY_VALIDATORS[field](field, value)
+        self._check_battery_field_supported(field)
         self._pending_battery[field] = validated
         _LOGGER.debug("Staged battery.%s = %r", field, validated)
         self._notify_pending_changed()
+
+    def _check_battery_field_supported(self, field: str) -> None:
+        if not self.battery_field_supported(field):
+            raise SettingsValidationError(
+                f"{field} is not supported by this system's battery settings API"
+            )
 
     def stage_feedin(self, field: str, value: Any) -> None:
         if field not in FEEDIN_VALIDATORS:
@@ -686,6 +704,8 @@ class SettingsManager:
                 "before submitting"
             )
         merged = copy.deepcopy(self._battery_cache)
+        for field in pending:
+            self._check_battery_field_supported(field)
 
         if "minimum_soc" in pending:
             merged.bat_use_cap = float(pending["minimum_soc"])
@@ -740,12 +760,25 @@ class SettingsManager:
 
         if "enabled" in pending_top:
             merged.battery_en = 1 if pending_top["enabled"] else 0
+        # v2 stores the cutoff per slot; the single cutoff setting applies to all
+        cutoff = merged.effective_cutoff_soc
         if "cutoff_soc" in pending_top:
-            merged.battery_feed_cutoff_soc = float(pending_top["cutoff_soc"])
+            cutoff = float(pending_top["cutoff_soc"])
+            if merged.bat_use_cap and cutoff < merged.bat_use_cap:
+                raise SettingsValidationError(
+                    f"Feed-in cutoff SOC {cutoff:.0f}% is below the minimum SOC "
+                    f"({merged.bat_use_cap:.0f}%)"
+                )
+            merged.battery_feed_cutoff_soc = cutoff
+            for slot in merged.slots:
+                slot.feed_cutoff_soc = cutoff
 
         for slot_index, slot_pending in pending_slots.items():
             while len(merged.slots) <= slot_index:
-                merged.slots.append(GridFeedInSlot(sort=len(merged.slots) + 1))
+                merged.slots.append(GridFeedInSlot(
+                    sort=len(merged.slots) + 1,
+                    feed_cutoff_soc=cutoff or None,
+                ))
             slot = merged.slots[slot_index]
             if "start" in slot_pending:
                 slot.start = slot_pending["start"]

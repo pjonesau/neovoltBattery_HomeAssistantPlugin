@@ -163,15 +163,115 @@ def test_feedin_from_api_response():
     assert s.slots[0].feed_power == 0
 
 
-def test_feedin_to_dict_matches_har_post():
-    """The saveFeedStrategy POST captured from the portal sent exactly these keys."""
+def test_feedin_to_dict_matches_portal_v2_post():
+    """The portal's v2/saveFeedStrategy POST sends exactly these keys.
+
+    Read from the portal's submit handler (2026-09): the cutoff SOC moved
+    into each slot, so there is no top-level batteryFeedCutoffSoc.
+    """
     s = GridFeedInSettings.from_api_response(FEEDIN_GET_SAMPLE, "test-id")
     payload = s.to_dict()
     assert set(payload.keys()) == {
-        "id", "batteryEn", "batteryFeedCutoffSoc",
-        "prechargeEn", "feedStrategyDTOList",
+        "id", "batteryEn", "feedStrategyDTOList", "prechargeEn", "prechargeSoc",
     }
     assert payload["id"] == "test-id"
+    assert set(payload["feedStrategyDTOList"][0].keys()) == {
+        "start", "end", "feedPower", "sort", "weeks", "feedCutoffSoc", "sysSn",
+    }
+
+
+def test_feedin_applies_portal_defaults_for_unset_socs():
+    """null/0 feedCutoffSoc and prechargeSoc are sent as the portal's 30 / 80."""
+    s = GridFeedInSettings.from_api_response(FEEDIN_GET_SAMPLE, "test-id")
+    assert s.slots[0].feed_cutoff_soc is None
+    payload = s.to_dict()
+    assert payload["prechargeSoc"] == 80
+    assert payload["feedStrategyDTOList"][0]["feedCutoffSoc"] == 30
+
+
+def test_feedin_per_slot_cutoff_round_trips():
+    data = dict(FEEDIN_GET_SAMPLE, feedStrategyVOList=[
+        {"id": 5318885, "start": "16:00", "end": "18:00", "feedPower": 30,
+         "feedCutoffSoc": 40, "sysSn": "SN", "sort": 1, "weekday": 127,
+         "weeks": [7, 1, 2, 3, 4, 5, 6]},
+    ])
+    s = GridFeedInSettings.from_api_response(data, "test-id")
+    assert s.effective_cutoff_soc == 40
+    dto = s.to_dict()["feedStrategyDTOList"][0]
+    assert dto["feedCutoffSoc"] == 40
+    assert dto["weeks"] == [7, 1, 2, 3, 4, 5, 6]
+    assert "id" not in dto  # the portal doesn't send the row id either
+
+
+def test_feedin_effective_cutoff_falls_back_to_top_level():
+    s = GridFeedInSettings.from_api_response(FEEDIN_GET_SAMPLE, "test-id")
+    assert s.effective_cutoff_soc == 30.0
+
+
+def test_feedin_renumbers_sort():
+    s = GridFeedInSettings(slots=[GridFeedInSlot(sort=5), GridFeedInSlot(sort=9)])
+    assert [d["sort"] for d in s.to_dict()["feedStrategyDTOList"]] == [1, 2]
+
+
+# ---------------------------------------------------------------------------
+# Legacy charge-config API (getChargeConfigInfo / updateChargeConfigInfo)
+# ---------------------------------------------------------------------------
+
+CHARGE_CONFIG_SAMPLE = {
+    "id": "server-id", "gridCharge": 1, "ctrDis": 0,
+    "timeChaf1": "14:30", "timeChae1": "16:00", "timeChaf2": "20:00", "timeChae2": "21:00",
+    "timeDisf1": "16:00", "timeDise1": "06:00", "timeDisf2": None, "timeDise2": None,
+    "batHighCap": 95, "batUseCap": 6, "batCapRange": [0, 100],
+    "upsReserveEnable": True, "upsReserve": 1, "cutoffSoc": None,
+    "timeExpLimW1": 800, "extraServerField": "preserve_me",
+}
+
+
+def test_charge_config_parses_time1_and_socs():
+    s = CycleStrategy.from_charge_config(CHARGE_CONFIG_SAMPLE)
+    assert s.api_variant == models.VARIANT_CHARGE_CONFIG
+    assert s.supports_slot_power is False
+    assert s.grid_charge_cycle == 1
+    assert s.bat_use_cap == 6
+    assert (s.charge_slots[0].begin_time, s.charge_slots[0].end_time) == ("14:30", "16:00")
+    assert s.charge_slots[0].charge_limit == 95
+    assert (s.discharge_slots[0].begin_time, s.discharge_slots[0].end_time) == ("16:00", "06:00")
+
+
+def test_charge_config_put_overlays_edits_on_get_response():
+    s = CycleStrategy.from_charge_config(CHARGE_CONFIG_SAMPLE)
+    s.host_system_id = "host-id"
+    s.bat_use_cap = 10
+    s.grid_charge_cycle = 0
+    s.charge_slots[0].end_time = "17:00"
+    s.charge_slots[0].charge_limit = 90
+    payload = s.to_charge_config_dict()
+    assert payload["id"] == "host-id"
+    assert payload["batUseCap"] == 10
+    assert payload["gridCharge"] == 0
+    assert payload["timeChae1"] == "17:00"
+    assert payload["batHighCap"] == 90
+    # Time 2 and unmodelled fields pass through untouched
+    assert (payload["timeChaf2"], payload["timeChae2"]) == ("20:00", "21:00")
+    assert payload["upsReserve"] == 1
+    assert payload["timeExpLimW1"] == 800
+    assert payload["extraServerField"] == "preserve_me"
+    # Nothing from the cycle-strategy shape leaks in
+    assert not {"chargeTimeList", "dischargeTimeList", "gridChargeCycle"} & payload.keys()
+
+
+def test_charge_config_put_defaults_null_times():
+    payload = CycleStrategy.from_charge_config(CHARGE_CONFIG_SAMPLE).to_charge_config_dict()
+    assert (payload["timeDisf2"], payload["timeDise2"]) == ("00:00", "00:00")
+
+
+def test_charge_config_put_keeps_server_id_without_host():
+    payload = CycleStrategy.from_charge_config(CHARGE_CONFIG_SAMPLE).to_charge_config_dict()
+    assert payload["id"] == "server-id"
+
+
+def test_cycle_strategy_supports_slot_power():
+    assert CycleStrategy.from_api_response(GET_RESPONSE_SAMPLE).supports_slot_power is True
 
 
 # ---------------------------------------------------------------------------
@@ -197,7 +297,7 @@ def test_dischargeslot_roundtrip():
 
 
 def test_gridfeedinslot_omits_optional_keys_when_unset():
-    """sysSn and id are optional — the slot.to_dict should omit them when blank."""
+    """sysSn is optional and id is never sent — omit both when unset."""
     slot = GridFeedInSlot(start="00:00", end="01:00", feed_power=100, sort=1)
     out = slot.to_dict()
     assert "id" not in out

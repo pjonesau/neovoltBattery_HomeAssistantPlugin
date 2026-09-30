@@ -108,7 +108,9 @@ class NeovoltClient:
         self.token: Optional[str] = None
         self.host_system_id = host_system_id   # systemId of the Host inverter
         self.host_sys_sn = host_sys_sn         # sysSn of the Host inverter
-    
+        # Battery settings API variant, detected by BatterySettingsAPI
+        self.settings_api_variant: Optional[str] = None
+
     async def async_login(self) -> bool:
         """Login to the Neovolt API using encrypted password."""
         _LOGGER.debug("Logging in to Neovolt API as %s", self.username)

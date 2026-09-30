@@ -82,7 +82,10 @@ class _BatteryNumberBase(CoordinatorEntity, NumberEntity):
 
     @property
     def available(self) -> bool:
-        return self._manager.battery_cache is not None
+        return (
+            self._manager.battery_cache is not None
+            and self._manager.battery_field_supported(self._field)
+        )
 
     @property
     def native_value(self) -> Optional[float]:

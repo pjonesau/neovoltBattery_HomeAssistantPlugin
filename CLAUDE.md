@@ -113,15 +113,34 @@ custom_components/bytewatt/
 - ✅ **Replaced magic numbers** with named constants
 - ✅ **Cleaned up imports** and standardized error logging
 
-### API Updates
-- ✅ **Updated to new settings API endpoints**:
-  - **GET**: `api/iterate/sysSet/getChargeConfigInfo?id=` (retrieve settings)
-  - **POST**: `api/iterate/sysSet/updateChargeConfigInfo` (update settings)
-- ✅ **Simplified device handling**: Using `id=""` (empty) to apply to all devices
-- ✅ **New API data format**: Updated to use `timeChaf1`, `batUseCap`, `gridCharge`, etc.
-- ✅ **Removed old API support**: Legacy endpoints no longer supported
+### Battery Settings API Variants (verified against the portal, 2026-09)
+The portal picks one of two battery-settings APIs per system, and so does
+`api/settings.py` (`BatterySettingsAPI`):
 
-### Battery Settings API Format
+- **Detection**: `GET api/iterate/sysSet/hasNewVersionCharge?id=<host>` → `data: true`
+  means cycle strategy, `false` means charge config. The result is cached on the
+  client as `settings_api_variant`. If detection fails, cycle strategy is assumed,
+  and a `6030` ("system does not exist") from `getCycleStrategy` switches to charge config.
+- **Cycle strategy** (newer firmware): `GET getCycleStrategy?id=` / `PUT setCycleStrategy`.
+  GET returns `dayChargeTimeList`; PUT expects `chargeTimeList` (see `CycleStrategy.to_dict`).
+- **Charge config** (legacy): `GET getChargeConfigInfo?id=` / `PUT updateChargeConfigInfo`.
+  Mapped into `CycleStrategy` via `from_charge_config` / `to_charge_config_dict`
+  (Time 1 only; everything else round-trips via `raw_data`). It has no per-slot
+  power, so the power entities are unavailable (`CycleStrategy.supports_slot_power`).
+- On a new-version system **both** GETs answer 200, but only the cycle strategy
+  holds the live schedule. Never pick the variant by "whichever endpoint responds".
+- An empty `id=` resolves to the account's first system, which may be a follower
+  inverter. Multi-inverter accounts must configure the host id.
+
+### Grid Feed-in API
+- `GET api/iterate/sysSet/getFeedStrategyList?id=<host>`
+- `POST api/iterate/sysSet/v2/saveFeedStrategy`: the portal only uses v2. Payload:
+  `{id, batteryEn, feedStrategyDTOList, prechargeEn, prechargeSoc}` where each slot is
+  `{start, end, feedPower, feedCutoffSoc, weeks, sysSn, sort}`. The cutoff SOC is
+  per slot; the portal defaults null values to cutoff 30 and precharge 80, and
+  requires cutoff >= `batUseCap`.
+
+### Legacy Charge Config Format (reference)
 
 **GET Settings** (`getChargeConfigInfo?id=`):
 ```json
@@ -141,7 +160,7 @@ custom_components/bytewatt/
 }
 ```
 
-**POST Settings** (`updateChargeConfigInfo`):
+**PUT Settings** (`updateChargeConfigInfo`):
 ```json
 {
   "id": "",

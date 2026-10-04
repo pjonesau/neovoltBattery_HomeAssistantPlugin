@@ -140,6 +140,14 @@ The portal picks one of two battery-settings APIs per system, and so does
   per slot; the portal defaults null values to cutoff 30 and precharge 80, and
   requires cutoff >= `batUseCap`.
 
+### Battery SOC on Parallel Systems (verified 2026-10)
+- `getLastPowerData?sysSn=<host>` reports the whole bank's SOC; followers report `soc: 0`
+  and zeroed power fields.
+- `sysSn=All` returns the capacity-weighted average SOC, so it reads low
+  (host 99.9%, follower 0%, All 74.93% for 28.8 + 9.6 kWh). Power fields under `All` match the host.
+- The client keeps `All` for power and stats but takes `soc` from the host
+  (`NeovoltClient._async_get_host_soc`). If that call fails, it falls back to `All`.
+
 ### Legacy Charge Config Format (reference)
 
 **GET Settings** (`getChargeConfigInfo?id=`):

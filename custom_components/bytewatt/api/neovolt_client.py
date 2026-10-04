@@ -306,7 +306,17 @@ class NeovoltClient:
                     power_data = result.get("data", {}) or {}
                     _LOGGER.debug("Received battery power data: %s", power_data)
                     battery_data.update(power_data)
-            
+
+            if self.host_sys_sn:
+                host_soc = await self._async_get_host_soc(headers)
+                if host_soc is not None:
+                    if host_soc != battery_data.get("soc"):
+                        _LOGGER.debug(
+                            "Using Host SOC %s instead of sysSn=All SOC %s",
+                            host_soc, battery_data.get("soc"),
+                        )
+                    battery_data["soc"] = host_soc
+
             # Now get the energy statistics
             stats_url = f"{self.base_url}/api/report/energy/getEnergyStatistics"
             
@@ -506,6 +516,42 @@ class NeovoltClient:
             # Wrap transport errors so the caller sees a uniform exception type.
             raise ByteWattAPIError(f"Transport error fetching battery data: {error}") from error
     
+    async def _async_get_host_soc(self, headers: Dict[str, str]) -> Optional[float]:
+        """Read the Host inverter's own SOC from getLastPowerData.
+
+        The server now reports the whole parallel bank's SOC on the Host and
+        0 on each follower (observed 2026-10), and ``sysSn=All`` returns the
+        capacity-weighted average of those, so multi-inverter installs read
+        low: Host 99.9%, follower 0%, All 74.93% for 28.8 + 9.6 kWh. Where
+        each inverter still reports its own SOC, parallel batteries stay
+        balanced, so the Host's value is still the right one to show.
+
+        Best effort: returns None on any failure so the caller keeps the
+        ``sysSn=All`` value.
+        """
+        url = f"{self.base_url}/api/report/energyStorage/getLastPowerData"
+        params = {"sysSn": self.host_sys_sn, "stationId": ""}
+        try:
+            async with asyncio.timeout(DEFAULT_TIMEOUT):
+                async with self.session.get(
+                    url=url, params=params, headers=headers,
+                ) as response:
+                    if response.status != 200:
+                        _LOGGER.debug("Host getLastPowerData HTTP %s", response.status)
+                        return None
+                    result = await _decode_json_object(response, "getLastPowerData (Host)")
+        except (asyncio.TimeoutError, aiohttp.ClientError, ValueError) as error:
+            _LOGGER.debug("Error fetching Host power data: %s", error)
+            return None
+
+        if result is None or result.get("code") not in (0, 200):
+            _LOGGER.debug("Host getLastPowerData failed: %s", result)
+            return None
+        soc = (result.get("data") or {}).get("soc")
+        if isinstance(soc, bool) or not isinstance(soc, (int, float)):
+            return None
+        return soc
+
     def _get_auth_headers(self) -> Dict[str, str]:
         """Get the authentication headers."""
         return {

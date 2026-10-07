@@ -139,6 +139,9 @@ The portal picks one of two battery-settings APIs per system, and so does
   `{start, end, feedPower, feedCutoffSoc, weeks, sysSn, sort}`. The cutoff SOC is
   per slot; the portal defaults null values to cutoff 30 and precharge 80, and
   requires cutoff >= `batUseCap`.
+- An unset slot cutoff is shown, saved and inherited by new slots as 30
+  (`GridFeedInSlot.cutoff_soc`). The GET's top-level `batteryFeedCutoffSoc` is a v1
+  field that v2 never saves, so it is not a fallback.
 
 ### Battery SOC on Parallel Systems (verified 2026-10)
 - `getLastPowerData?sysSn=<host>` reports the whole bank's SOC; followers report `soc: 0`

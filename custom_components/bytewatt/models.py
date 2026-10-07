@@ -418,6 +418,14 @@ class GridFeedInSlot:
             weeks=data.get("weeks") or list(ALL_WEEKDAYS),
         )
 
+    @property
+    def cutoff_soc(self) -> float:
+        """The cutoff this slot is shown and saved with.
+
+        An unset cutoff means the portal default, as on the portal itself.
+        """
+        return self.feed_cutoff_soc or DEFAULT_FEED_CUTOFF_SOC
+
     def to_dict(self) -> Dict[str, Any]:
         """Build one feedStrategyDTOList entry for v2/saveFeedStrategy.
 
@@ -430,7 +438,7 @@ class GridFeedInSlot:
             "feedPower": self.feed_power,
             "sort": self.sort,
             "weeks": self.weeks,
-            "feedCutoffSoc": self.feed_cutoff_soc or DEFAULT_FEED_CUTOFF_SOC,
+            "feedCutoffSoc": self.cutoff_soc,
         }
         if self.sys_sn:
             d["sysSn"] = self.sys_sn
@@ -472,10 +480,14 @@ class GridFeedInSettings:
 
     @property
     def effective_cutoff_soc(self) -> float:
-        """The cutoff SOC in force: v2 stores it per slot, so Time 1 wins."""
-        if self.slots and self.slots[0].feed_cutoff_soc is not None:
-            return self.slots[0].feed_cutoff_soc
-        return self.battery_feed_cutoff_soc
+        """The cutoff SOC in force: v2 stores it per slot, so Time 1 wins.
+
+        The top-level batteryFeedCutoffSoc is a v1 field that v2 never saves,
+        so it is not a fallback: an unset cutoff is the portal default.
+        """
+        if self.slots:
+            return self.slots[0].cutoff_soc
+        return DEFAULT_FEED_CUTOFF_SOC
 
     def to_dict(self) -> Dict[str, Any]:
         """Build the v2/saveFeedStrategy POST payload, as the portal sends it.

@@ -203,8 +203,17 @@ def test_feedin_per_slot_cutoff_round_trips():
     assert "id" not in dto  # the portal doesn't send the row id either
 
 
-def test_feedin_effective_cutoff_falls_back_to_top_level():
-    s = GridFeedInSettings.from_api_response(FEEDIN_GET_SAMPLE, "test-id")
+def test_feedin_unset_cutoff_shown_as_saved():
+    """An unset slot cutoff is shown as the value a save writes, not the top level."""
+    data = dict(FEEDIN_GET_SAMPLE, batteryFeedCutoffSoc=20.0)
+    s = GridFeedInSettings.from_api_response(data, "test-id")
+    assert s.effective_cutoff_soc == 30.0
+    assert s.to_dict()["feedStrategyDTOList"][0]["feedCutoffSoc"] == s.effective_cutoff_soc
+
+
+def test_feedin_effective_cutoff_without_slots_is_portal_default():
+    data = dict(FEEDIN_GET_SAMPLE, batteryFeedCutoffSoc=20.0, feedStrategyVOList=[])
+    s = GridFeedInSettings.from_api_response(data, "test-id")
     assert s.effective_cutoff_soc == 30.0
 
 

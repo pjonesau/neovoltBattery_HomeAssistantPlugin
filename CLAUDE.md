@@ -2,52 +2,60 @@
 
 ## Repository Overview
 
-This is a Home Assistant custom integration for monitoring and controlling ByteWatt/Neovolt battery systems. The integration provides comprehensive real-time monitoring of solar, battery, and grid power flows with sophisticated recovery mechanisms and battery control capabilities.
+A Home Assistant custom integration (domain `bytewatt`) for monitoring and controlling ByteWatt/Neovolt battery systems through the Byte-Watt cloud portal API: real-time solar, battery and grid power flows, daily and cumulative energy, battery charge/discharge scheduling and Grid Feed-in Control, with automatic recovery when the API stalls.
 
-### Current Status
-- **Version**: 1.0.0 (HACS compatible)
-- **Architecture**: Production-ready with robust error handling and automatic recovery
-- **Recent Cleanup**: Technical debt removed, modular architecture implemented (2024-12)
+- **Version**: 1.1.0 (`manifest.json`), HACS custom repository, requires Home Assistant 2024.11.0+.
+- This checkout is `github.com/pjonesau/neovoltBattery_HomeAssistantPlugin`, a fork of `candreacchio/neovoltBattery_HomeAssistantPlugin`; `manifest.json`, `info.md` and the README still point documentation and issues at the original repo.
 
 ## Project Structure
 
 ```
 custom_components/bytewatt/
-├── __init__.py                 # Main integration entry point & services
-├── bytewatt_client.py         # High-level API wrapper
-├── config_flow.py             # Configuration UI flow
-├── const.py                   # Constants and configuration
-├── coordinator.py             # Data update coordinator with recovery
-├── models.py                  # Data models for the integration
-├── sensor.py                  # All sensor entity definitions
-├── services.yaml              # Service definitions for Home Assistant
-├── validation.py              # Minimal data validation (cleaned up)
-├── manifest.json              # Integration metadata
-├── translations/
-│   └── en.json               # English translations
-├── api/                      # Low-level API clients
-│   ├── __init__.py
-│   ├── neovolt_auth.py       # Authentication handling
-│   ├── neovolt_client.py     # Core API client with async methods
-│   └── settings.py           # Battery settings API
-└── utilities/                # Utility modules (new modular architecture)
-    ├── __init__.py
-    ├── circuit_breaker.py    # Circuit breaker pattern implementation
-    ├── connection_stats.py   # Connection health statistics
-    ├── diagnostic_service.py # Health checks and diagnostics
-    └── time_utils.py         # Time manipulation utilities
+├── __init__.py            # Entry setup/unload, service registration and handlers
+├── config_flow.py         # Setup (credentials → host inverter), reconfigure, options (scan interval)
+├── const.py               # Constants, defaults and config keys
+├── coordinator.py         # DataUpdateCoordinator: polling, heartbeat, stale-data recovery
+├── bytewatt_client.py     # Thin high-level wrapper over api/neovolt_client.py
+├── models.py              # Data models (CycleStrategy, GridFeedInSlot, …)
+├── settings_manager.py    # SettingsManager: server cache + pending diff + submit (single source of truth)
+├── sensor.py              # ~30 sensors: real-time power, today's energy, cumulative totals
+├── switch.py              # Grid charging, discharge time control (+ feed-in switch from grid_feedin.py)
+├── number.py              # Min SOC, charge cap, slot charge/discharge power (+ feed-in numbers)
+├── time.py                # Charge/discharge windows (+ feed-in Time 1 start/end)
+├── grid_feedin.py         # Grid Feed-in entities, set up from switch/number/time
+├── button.py              # Re-exports pending.async_setup_entry
+├── pending.py             # Submit Settings / Discard Pending Settings buttons
+├── validation.py          # Minimal data validation
+├── services.yaml          # Service schemas
+├── strings.json           # UI strings (translations/en.json is a copy — keep them identical)
+├── translations/en.json
+├── brand/                 # Icon and logo images
+├── api/
+│   ├── neovolt_auth.py    # Password encryption and authentication
+│   ├── neovolt_client.py  # Low-level async HTTP client (power data, stats, host SOC)
+│   └── settings.py        # Stateless settings transport: endpoints, payloads, retries, 6069 re-login
+└── utilities/
+    ├── circuit_breaker.py
+    ├── connection_stats.py
+    ├── diagnostic_service.py  # health_check service implementation
+    └── time_utils.py
+
+tests/                     # pytest suite (models, client, settings API, settings manager)
+scripts/                   # manual_auth_check.py, manual_battery_data_check.py — live API probes, run by hand
+info.md                    # HACS info page
+RECOVERY_SYSTEM.md         # Recovery system description
 ```
 
 ## Commands
+- **Tests**: `pip install -r requirements_test.txt`, then `pytest` from the repo root (`pytest.ini` sets `testpaths = tests` and `asyncio_mode = auto`, so async tests need no marker)
 - **Manual Install**: Copy `custom_components/bytewatt` to Home Assistant's `custom_components` directory
 - **Lint**: `flake8 custom_components/bytewatt --max-line-length=100`
 - **Type Check**: `mypy custom_components/bytewatt --ignore-missing-imports`
-- **Validate**: `hass-config-check custom_components/bytewatt`
-- **Debug**: Add to HA configuration.yaml: `logger: default: debug`
-- **Syntax Check**: `python3 -m py_compile custom_components/bytewatt/**/*.py`
+- **Syntax Check**: `find custom_components/bytewatt -name '*.py' -exec python3 -m py_compile {} +`
+- **Debug**: in HA `configuration.yaml`, `logger: logs: custom_components.bytewatt: debug`
 
 ## Code Style
-- **Python**: Version 3.9+ compatible
+- **Python**: whatever Home Assistant 2024.11+ runs on (3.12+)
 - **Formatting**: 4 spaces (not tabs), <100 char lines
 - **Imports**: Standard lib → Third party → Home Assistant, grouped with blank lines
 - **Naming**: CamelCase (classes), UPPER_CASE (constants), snake_case (variables/functions)
@@ -58,61 +66,32 @@ custom_components/bytewatt/
 
 ## Architecture
 
-### Core Components
-- **`bytewatt_client.py`**: High-level async API wrapper with battery control methods
-- **`coordinator.py`**: DataUpdateCoordinator with circuit breaker pattern and automatic recovery
-- **`sensor.py`**: All sensor entities (50+ sensors for comprehensive monitoring)
-- **`config_flow.py`**: UI configuration flow with validation
-- **`const.py`**: All constants, defaults, and configuration keys
+### Data path
+`ByteWattDataUpdateCoordinator` (`coordinator.py`) polls through `bytewatt_client.py` → `api/neovolt_client.py` every `scan_interval` seconds (default 60, minimum 30). Sensors are `CoordinatorEntity`s reading its data.
 
-### API Layer (`api/`)
-- **`neovolt_client.py`**: Low-level async HTTP client with authentication
-- **`neovolt_auth.py`**: Password encryption and authentication logic
-- **`settings.py`**: Battery settings API with validation and retry logic
+### Settings path (staged edits)
+All writable entities — switches, numbers, times, and the Grid Feed-in entities — go through `SettingsManager` (`settings_manager.py`), never the API directly:
+- Entities read `effective_*()` (server value overlaid with anything pending) and write `stage_*()` (validated, held locally).
+- The **Submit Settings** button (`pending.py`) calls `submit()`, which pushes the battery batch and the feed-in batch through `api/settings.py` in one go. On a per-batch failure, that batch's pending changes are restored so the UI does not lie. **Discard Pending Settings** drops them.
+- Services stage and submit immediately, on a path kept separate from the UI's pending dict.
+- After a successful submit, refreshes trust the local cache for a short window, because the portal is not read-after-write consistent.
+- Unloading the entry with changes pending raises a persistent notification that they were lost.
 
-### Utility Modules (`utilities/`)
-- **`circuit_breaker.py`**: Implements circuit breaker pattern for API resilience
-- **`connection_stats.py`**: Tracks connection health and response times
-- **`diagnostic_service.py`**: Health checks, diagnostics, and logging
-- **`time_utils.py`**: Time format validation and manipulation
+Read the docstring at the top of `settings_manager.py` before changing any of this; it describes the locking and snapshot-restore model.
 
-### Key Features
-1. **Real-time Monitoring**: Battery SOC, power flows, energy statistics
-2. **Daily Statistics**: PV generation, consumption, self-sufficiency metrics
-3. **Battery Control**: Charge/discharge scheduling, minimum SOC setting
-4. **Automatic Recovery**: Circuit breaker pattern with exponential backoff
-5. **Health Monitoring**: Comprehensive diagnostics and connectivity checks
-6. **HACS Compatible**: Installable through Home Assistant Community Store
+### Host inverter
+Multi-inverter accounts pick a **host** inverter during setup (`select_inverter` step), stored as `host_system_id` / `host_sys_sn`. It can be changed later through **Reconfigure** (`async_step_reconfigure`), not the options flow. Settings and SOC reads target the host; see the API notes below for why an empty `id=` is not safe. A repair issue is raised when a multi-inverter account has no host configured.
 
-### Services Available
-- `bytewatt.set_discharge_time` - Set battery discharge end time
-- `bytewatt.set_discharge_start_time` - Set battery discharge start time  
-- `bytewatt.set_charge_start_time` - Set battery charge start time
-- `bytewatt.set_charge_end_time` - Set battery charge end time
-- `bytewatt.set_minimum_soc` - Set minimum state of charge
-- `bytewatt.update_battery_settings` - Update multiple settings at once
-- `bytewatt.force_reconnect` - Force API reconnection
-- `bytewatt.health_check` - Run comprehensive health check
-- `bytewatt.toggle_diagnostics` - Enable/disable diagnostic logging
+### Recovery
+The coordinator runs a heartbeat (every 120 s), marks data stale after 300 s, and after 3 consecutive stale checks resets the client and re-authenticates. A failed recovery is retried *sooner*, not later — the next check comes at the heartbeat interval divided by the attempt count (capped at 5, floor 30 s) — and API calls go through a circuit breaker (`utilities/circuit_breaker.py`); it also reconnects daily at 03:30. These values are read from `entry.options` (`heartbeat_interval`, `max_data_age`, `stale_checks_threshold`, `notify_on_recovery`, `diagnostics_mode`, `auto_reconnect_time`), but **the options flow only exposes `scan_interval`**, so in practice they are always the `DEFAULT_*` values in `const.py`. `diagnostics_mode` is toggled at runtime by the `toggle_diagnostics` service. See `RECOVERY_SYSTEM.md`.
 
-### Configuration Options
-- `scan_interval`: Data update frequency (default: 60s, min: 30s)
-- `heartbeat_interval`: Health check frequency (default: 120s)
-- `max_data_age`: Max age before data considered stale (default: 300s)
-- `stale_checks_threshold`: Failed checks before recovery (default: 3)
-- `notify_on_recovery`: Show recovery notifications (default: true)
-- `diagnostics_mode`: Enable detailed logging (default: false)
-- `auto_reconnect_time`: Daily reconnect time (default: "03:30:00")
+### Services
+Defined in `services.yaml`, registered in `__init__.py`. All accept an optional `entry_id` (required with more than one account).
+- Battery: `set_minimum_soc`, `set_charge_cap`, `set_charge_start_time`, `set_charge_end_time`, `set_discharge_start_time`, `set_discharge_time` (end), `update_battery_settings`
+- Grid feed-in: `set_grid_feedin_enabled`, `set_grid_feedin_cutoff_soc`, `update_grid_feedin_slot`
+- Maintenance: `force_reconnect`, `health_check`, `toggle_diagnostics`
 
-## Recent Changes (December 2024)
-
-### Technical Debt Cleanup
-- ✅ **Removed 1000+ lines of disabled validation code** from `validation.py`
-- ✅ **Split coordinator.py** (896 lines) into focused utility modules
-- ✅ **Re-enabled battery control services** - API supports these features
-- ✅ **Replaced magic numbers** with named constants
-- ✅ **Cleaned up imports** and standardized error logging
-
+## Portal API notes
 ### Battery Settings API Variants (verified against the portal, 2026-09)
 The portal picks one of two battery-settings APIs per system, and so does
 `api/settings.py` (`BatterySettingsAPI`):
@@ -190,31 +169,16 @@ The portal picks one of two battery-settings APIs per system, and so does
 }
 ```
 
-### New Modular Architecture
-- **Circuit Breaker Pattern**: `utilities/circuit_breaker.py` - Prevents API flooding during outages
-- **Connection Statistics**: `utilities/connection_stats.py` - Tracks API health metrics
-- **Diagnostic Service**: `utilities/diagnostic_service.py` - Health checks and troubleshooting
-- **Improved Error Handling**: Exponential backoff, proper exception types
-
-### Battery Control Features (Re-enabled)
-- All battery control services now functional (previously disabled)
-- Async battery settings API with validation and retry logic
-- Support for charge/discharge time scheduling and minimum SOC
-- Proper error handling and user feedback
-
 ## Testing & Validation
 
-### Test Data Structure
-```
-TestData/
-├── comparison_results/        # Validator comparison outputs
-├── validatedJsonFiles/        # Known good data samples
-└── [various validators]       # Historical validation scripts
-```
+`tests/` is a pytest suite (`pytest-asyncio` in auto mode) covering `models.py`, `api/neovolt_client.py`, `api/settings.py` and `settings_manager.py` with mocked HTTP. There are no entity, config-flow or coordinator tests; those can only be exercised in a running Home Assistant. The `scripts/` probes hit the live portal with real credentials and are run by hand.
+
+Mocked responses only prove the code agrees with the fixtures. The API notes above were verified against the live portal; when changing how a payload is built or parsed, check it against the portal's own requests rather than the fixtures.
 
 ### Validation Strategy
 - **Basic Validation**: SOC range checks, required field validation
 - **API Response Validation**: Server-side data is trusted as accurate
+- **Settings validation**: `SettingsManager.stage_*()` rejects invalid values (`SettingsValidationError`) before anything is staged — e.g. a feed-in cutoff SOC below the minimum SOC
 - **Retry Logic**: Exponential backoff for transient failures
 - **Circuit Breaker**: Prevents cascading failures during outages
 

@@ -14,7 +14,10 @@ from homeassistant.helpers.update_coordinator import (
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
+    CONF_HOST_SYS_SN,
     DOMAIN,
+    HOST_PV_INPUTS,
+    PV_INPUT_SENSORS,
     SENSOR_SOC,
     SENSOR_GRID_CONSUMPTION,
     SENSOR_HOUSE_CONSUMPTION,
@@ -339,7 +342,17 @@ async def async_setup_entry(
         stack_sensors.append(ByteWattStackPowerSensor(coordinator, entry, sys_sn, label))
         stack_sensors.append(ByteWattStackStateSensor(coordinator, entry, sys_sn, label))
 
-    async_add_entities(soc_sensors + grid_sensors + daily_stats_sensors + stack_sensors)
+    # Created from config, not first-poll data, so a failed first poll still
+    # leaves the sensors in place (unavailable) instead of never adding them.
+    host_sys_sn = entry.data.get(CONF_HOST_SYS_SN)
+    pv_input_sensors = [
+        ByteWattPvInputSensor(coordinator, entry, sensor_type, name, field, host_sys_sn)
+        for field, sensor_type, name in PV_INPUT_SENSORS
+    ] if host_sys_sn else []
+
+    async_add_entities(
+        soc_sensors + grid_sensors + daily_stats_sensors + stack_sensors + pv_input_sensors
+    )
 
 
 class ByteWattSensor(CoordinatorEntity, SensorEntity):
@@ -415,6 +428,48 @@ class ByteWattSensor(CoordinatorEntity, SensorEntity):
         except Exception as ex:
             _LOGGER.error(f"Error getting sensor state for {self._attr_name}: {ex}")
             return None
+
+
+class ByteWattPvInputSensor(ByteWattSensor):
+    """Power of one solar input on the Host inverter.
+
+    Reads the Host's own response: the top-level ``ppv1`` etc. in the battery
+    data are the merged sysSn=All figures. Only a poll that succeeded counts,
+    because the coordinator re-serves its last good data after a failure, and
+    a frozen reading must not pass for a live one in history.
+    """
+
+    def __init__(self, coordinator, config_entry, sensor_type, name, attribute, sys_sn):
+        """Initialize the sensor."""
+        super().__init__(
+            coordinator,
+            config_entry,
+            sensor_type,
+            name,
+            SensorDeviceClass.POWER,
+            attribute,
+            "W",
+            "mdi:solar-panel",
+        )
+        self._sys_sn = sys_sn
+
+    @property
+    def native_value(self):
+        """Return this input's power, or None if this poll has no reading."""
+        data = self.coordinator.data or {}
+        if data.get("connection_status") != "connected":
+            return None
+        return data.get("battery", {}).get(HOST_PV_INPUTS, {}).get(self._attribute)
+
+    @property
+    def available(self) -> bool:
+        """Return if this poll produced a reading; 0 W is a real value."""
+        return super().available and self.native_value is not None
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        """Return the inverter this input belongs to."""
+        return {"sysSn": self._sys_sn}
 
 
 class ByteWattGridSensor(ByteWattSensor):

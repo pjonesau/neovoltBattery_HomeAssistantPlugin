@@ -56,6 +56,18 @@ SENSOR_BATTERY_POWER = "battery_power"
 SENSOR_PV = "pv_power"
 SENSOR_BATTERY_STATE = "battery_state"
 SENSOR_LAST_UPDATE = "last_update"
+SENSOR_PV1 = "pv1_power"
+SENSOR_PV2 = "pv2_power"
+
+# Battery data key holding the Host's own per-input readings for this poll.
+HOST_PV_INPUTS = "host_pv_inputs"
+
+# (Host getLastPowerData field, sensor type, name). ppv3/ppv4 also exist but
+# read 0 on current hardware; a new row here is all a further input needs.
+PV_INPUT_SENSORS = (
+    ("ppv1", SENSOR_PV1, "PV1 Power"),
+    ("ppv2", SENSOR_PV2, "PV2 Power"),
+)
 
 # Grid stats sensor types
 SENSOR_TOTAL_SOLAR = "total_solar_generation"

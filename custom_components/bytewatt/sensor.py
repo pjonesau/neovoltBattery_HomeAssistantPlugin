@@ -67,7 +67,7 @@ async def async_setup_entry(
         ),
         ByteWattSensor(
             coordinator, 
-            entry,
+            entry, 
             SENSOR_GRID_CONSUMPTION,
             "Grid Consumption",
             SensorDeviceClass.POWER,
@@ -133,7 +133,7 @@ async def async_setup_entry(
             "Total_Solar_Generation",
             "kWh",
             "mdi:solar-power",
-            cumulative=True
+            cumulative=True,
         ),
         ByteWattGridSensor(
             coordinator, 
@@ -144,7 +144,7 @@ async def async_setup_entry(
             "Total_Feed_In",
             "kWh",
             "mdi:transmission-tower-export",
-            cumulative=True
+            cumulative=True,
         ),
         ByteWattGridSensor(
             coordinator, 
@@ -155,7 +155,7 @@ async def async_setup_entry(
             "Total_Battery_Charge",
             "kWh",
             "mdi:battery-charging",
-            cumulative=True
+            cumulative=True,
         ),
         ByteWattGridSensor(
             coordinator,
@@ -166,7 +166,7 @@ async def async_setup_entry(
             "Total_Battery_Discharge",
             "kWh",
             "mdi:battery-minus",
-            cumulative=True
+            cumulative=True,
         ),
         ByteWattGridSensor(
             coordinator, 
@@ -174,10 +174,10 @@ async def async_setup_entry(
             SENSOR_PV_POWER_HOUSE, 
             "PV Power to House", 
             SensorDeviceClass.ENERGY,
-            "PV_Power_House", 
-            "kWh", 
+            "PV_Power_House",
+            "kWh",
             "mdi:solar-power-variant",
-            cumulative=True
+            cumulative=True,
         ),
         ByteWattGridSensor(
             coordinator, 
@@ -185,10 +185,10 @@ async def async_setup_entry(
             SENSOR_PV_CHARGING_BATTERY, 
             "PV Charging Battery", 
             SensorDeviceClass.ENERGY,
-            "PV_Charging_Battery", 
-            "kWh", 
+            "PV_Charging_Battery",
+            "kWh",
             "mdi:solar-power-variant-outline",
-            cumulative=True
+            cumulative=True,
         ),
         ByteWattGridSensor(
             coordinator, 
@@ -196,10 +196,10 @@ async def async_setup_entry(
             SENSOR_TOTAL_HOUSE_CONSUMPTION, 
             "Total House Consumption", 
             SensorDeviceClass.ENERGY,
-            "Total_House_Consumption", 
-            "kWh", 
+            "Total_House_Consumption",
+            "kWh",
             "mdi:home-lightning-bolt",
-            cumulative=True
+            cumulative=True,
         ),
         ByteWattGridSensor(
             coordinator, 
@@ -207,10 +207,10 @@ async def async_setup_entry(
             SENSOR_GRID_BATTERY_CHARGE, 
             "Grid Based Battery Charge", 
             SensorDeviceClass.ENERGY,
-            "Grid_Based_Battery_Charge", 
-            "kWh", 
+            "Grid_Based_Battery_Charge",
+            "kWh",
             "mdi:transmission-tower-import",
-            cumulative=True
+            cumulative=True,
         ),
         ByteWattGridSensor(
             coordinator, 
@@ -218,10 +218,10 @@ async def async_setup_entry(
             SENSOR_GRID_POWER_CONSUMPTION, 
             "Grid Power Consumption", 
             SensorDeviceClass.ENERGY,
-            "Grid_Power_Consumption", 
-            "kWh", 
+            "Grid_Power_Consumption",
+            "kWh",
             "mdi:transmission-tower",
-            cumulative=True
+            cumulative=True,
         ),
     ]
     
@@ -356,10 +356,7 @@ class ByteWattSensor(CoordinatorEntity, SensorEntity):
         self._attr_name = name
         self._attr_unique_id = f"{config_entry.entry_id}_{sensor_type}"
         self._attr_device_class = device_class
-        # HA forbids unit_of_measurement on certain device classes (e.g. timestamp);
-        # treat the empty string as None to silence the deprecation warning that
-        # will become a hard validation error in a future HA release.
-        self._attr_native_unit_of_measurement = unit if unit else None
+        self._attr_native_unit_of_measurement = unit
         self._attr_icon = icon
         self._attr_entity_category = entity_category
         if device_class == SensorDeviceClass.POWER:
@@ -400,7 +397,7 @@ class ByteWattSensor(CoordinatorEntity, SensorEntity):
                 return None
                 
             # Return the value, converting string values to float if needed for numerical sensors
-            if self._attr_device_class == SensorDeviceClass.POWER and isinstance(value, (str, int, float)):    
+            if self._attr_device_class == SensorDeviceClass.POWER and isinstance(value, (str, int, float)):
                 try:
                     return float(value)
                 except (ValueError, TypeError):
@@ -425,17 +422,17 @@ class ByteWattGridSensor(ByteWattSensor):
         unit,
         icon,
         entity_category=None,
-        cumulative=false,
+        cumulative=False,
     ):
         """Initialize the sensor."""
         super().__init__(
-            coordinator, 
-            config_entry, 
-            sensor_type, 
-            name, 
-            device_class, 
-            attribute, 
-            unit, 
+            coordinator,
+            config_entry,
+            sensor_type,
+            name,
+            device_class,
+            attribute,
+            unit,
             icon,
             entity_category
         )
@@ -456,10 +453,10 @@ class ByteWattGridSensor(ByteWattSensor):
         try:
             if not self.coordinator.data or "battery" not in self.coordinator.data:
                 return None
-            
+
             battery_data = self.coordinator.data["battery"]
 
-                        if self._attribute not in battery_data:
+            if self._attribute not in battery_data:
                 _LOGGER.debug(f"Grid sensor {self._attribute} data not found in battery response")
                 return None
 
@@ -484,7 +481,6 @@ class ByteWattGridSensor(ByteWattSensor):
                 self._last_valid_value = value
 
             return value
-        
         except Exception as ex:
             _LOGGER.error(f"Error getting grid sensor state: {ex}")
             return None
@@ -499,10 +495,12 @@ class ByteWattGridSensor(ByteWattSensor):
         # Check if this attribute exists in the data
         return self._attribute in self.coordinator.data["battery"]
 
+
 BATTERY_STATE_CHARGING = "Charging"
 BATTERY_STATE_DISCHARGING = "Discharging"
 BATTERY_STATE_IDLE = "Idle"
 BATTERY_STATE_HYSTERESIS_W = 50
+
 
 class ByteWattBatteryStateSensor(CoordinatorEntity, SensorEntity):
     """Sensor that derives battery state (Charging/Discharging/Idle) from pbat."""
@@ -571,6 +569,7 @@ class ByteWattBatteryStateSensor(CoordinatorEntity, SensorEntity):
             _LOGGER.error("Error getting battery state: %s", ex)
             return None
 
+
 class ByteWattLastUpdateSensor(ByteWattSensor):
     """Representation of a Byte-Watt Last Update Sensor that doesn't rely on createTime."""
     
@@ -613,5 +612,3 @@ class ByteWattLastUpdateSensor(ByteWattSensor):
     def available(self) -> bool:
         """Return if entity is available."""
         return hasattr(self.coordinator, '_last_successful_update') and self.coordinator._last_successful_update is not None
-
-

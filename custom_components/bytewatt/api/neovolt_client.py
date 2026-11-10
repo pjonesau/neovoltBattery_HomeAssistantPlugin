@@ -10,12 +10,14 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.util import dt as dt_util
 
 from .neovolt_auth import EncryptionError, encrypt_password
+from ..const import HOST_PV_INPUTS, PV_INPUT_SENSORS
 from ..stacks import (
     ROLE_FOLLOWER,
     ROLE_HOST,
     StackSocSample,
     derive_stack_capacities,
     detect_roles,
+    extract_pv_inputs,
     pick_latest_stack_soc,
 )
 
@@ -347,6 +349,12 @@ class NeovoltClient:
                             host_soc, battery_data.get("soc"),
                         )
                     battery_data["soc"] = host_soc
+
+                # Same response as the SOC above; no request of its own.
+                battery_data[HOST_PV_INPUTS] = extract_pv_inputs(
+                    self._last_host_inverter_data or {},
+                    [field for field, _, _ in PV_INPUT_SENSORS],
+                )
 
                 stacks = await self._async_build_stack_data(headers)
                 if stacks:

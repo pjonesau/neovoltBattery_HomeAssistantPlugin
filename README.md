@@ -168,6 +168,8 @@ After install, Settings → Devices & Services → Byte-Watt → Configure:
 | `pload` | House Consumption (W) |
 | `pbat` | Battery Power (W) |
 | `ppv` | PV Power (W) |
+| `ppv1` (Host inverter) | PV1 Power (W) |
+| `ppv2` (Host inverter) | PV2 Power (W) |
 | `soc` | Battery Percentage (%) |
 | `epvT` | Total Solar Generation (kWh) |
 | `eout` | Total Feed In (kWh) |

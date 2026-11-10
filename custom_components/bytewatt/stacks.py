@@ -15,7 +15,7 @@ Host cobat - sum(Follower cobat).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 PARALLEL_GRID_MODE_HOST = 1
 PARALLEL_GRID_MODE_FOLLOWER = 2
@@ -42,6 +42,20 @@ def _as_float(value: Any) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def extract_pv_inputs(data: Dict[str, Any], fields: Iterable[str]) -> Dict[str, float]:
+    """Pick per-input solar power out of one inverter's getLastPowerData ``data``.
+
+    A missing or non-numeric field is left out rather than coerced, so callers
+    can tell no data from a genuine 0 W.
+    """
+    inputs: Dict[str, float] = {}
+    for field in fields:
+        value = _as_float(data.get(field))
+        if value is not None:
+            inputs[field] = value
+    return inputs
 
 
 def detect_roles(inverters: List[Dict[str, Any]]) -> Dict[str, str]:

@@ -1,13 +1,9 @@
 """Tests for low-level neovolt_client helpers and the encryption fail-loud contract.
 
-Load the relevant modules directly via importlib so the test suite doesn't
-need the full integration package to be importable (which would pull in
-voluptuous + homeassistant).
+The client imports Home Assistant at module load, so the module is skipped
+when HA isn't installed.
 """
 from __future__ import annotations
-
-import importlib.util
-import os
 
 import pytest
 
@@ -16,20 +12,11 @@ pytest.importorskip("Crypto.Cipher")
 pytest.importorskip("aiohttp")
 
 
-def _load_module(rel_path: str, name: str):
-    here = os.path.dirname(__file__)
-    path = os.path.abspath(os.path.join(here, "..", "custom_components", "bytewatt", rel_path))
-    spec = importlib.util.spec_from_file_location(name, path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 # neovolt_client imports homeassistant.helpers.aiohttp_client at module load —
-# skip cleanly when HA isn't installed (bare sandbox).
+# skip cleanly when HA isn't installed (bare sandbox). Import through the
+# package so the client's relative ``from .neovolt_auth import`` resolves.
 try:
-    neovolt_auth = _load_module("api/neovolt_auth.py", "bytewatt_neovolt_auth")
-    neovolt_client = _load_module("api/neovolt_client.py", "bytewatt_neovolt_client")
+    from custom_components.bytewatt.api import neovolt_auth, neovolt_client
 except ModuleNotFoundError as exc:
     pytest.skip(f"Module not installed in this environment: {exc.name}", allow_module_level=True)
 
@@ -141,3 +128,74 @@ async def test_decode_returns_none_on_value_error():
     """ValueError covers json.JSONDecodeError for malformed bodies."""
     result = await _decode_json_object(_FakeResponse(raise_exc=ValueError("bad json")), "ctx")
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# _async_get_host_soc — SOC comes from the Host, not the sysSn=All average
+# ---------------------------------------------------------------------------
+
+class _FakeGetResponse(_FakeResponse):
+    def __init__(self, json_value, status=200):
+        super().__init__(json_value)
+        self.status = status
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class _FakeSession:
+    def __init__(self, response=None, raise_exc=None):
+        self._response = response
+        self._raise_exc = raise_exc
+        self.calls = []
+
+    def get(self, url, params=None, headers=None):
+        self.calls.append((url, params))
+        if self._raise_exc is not None:
+            raise self._raise_exc
+        return self._response
+
+
+def _client_with(session, host_sys_sn="HOST123"):
+    client = object.__new__(neovolt_client.NeovoltClient)
+    client.base_url = "https://example.invalid"
+    client.session = session
+    client.host_sys_sn = host_sys_sn
+    return client
+
+
+@pytest.mark.asyncio
+async def test_host_soc_queries_host_sys_sn():
+    session = _FakeSession(_FakeGetResponse({"code": 200, "data": {"soc": 99.9}}))
+    soc = await _client_with(session)._async_get_host_soc({})
+    assert soc == 99.9
+    assert session.calls[0][1]["sysSn"] == "HOST123"
+
+
+@pytest.mark.asyncio
+async def test_host_soc_none_on_http_error():
+    session = _FakeSession(_FakeGetResponse({}, status=500))
+    assert await _client_with(session)._async_get_host_soc({}) is None
+
+
+@pytest.mark.asyncio
+async def test_host_soc_none_on_api_error_code():
+    session = _FakeSession(_FakeGetResponse({"code": 6069, "msg": "expired"}))
+    assert await _client_with(session)._async_get_host_soc({}) is None
+
+
+@pytest.mark.asyncio
+async def test_host_soc_none_when_soc_missing_or_null():
+    for data in ({}, {"soc": None}, None):
+        session = _FakeSession(_FakeGetResponse({"code": 200, "data": data}))
+        assert await _client_with(session)._async_get_host_soc({}) is None
+
+
+@pytest.mark.asyncio
+async def test_host_soc_none_on_transport_error():
+    import aiohttp
+    session = _FakeSession(raise_exc=aiohttp.ClientError("boom"))
+    assert await _client_with(session)._async_get_host_soc({}) is None

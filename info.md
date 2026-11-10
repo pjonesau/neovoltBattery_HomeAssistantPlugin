@@ -24,7 +24,7 @@ Host inverter (used for Grid Feed-in and cycle strategy control).
 - **Staged-edit workflow** — UI changes accumulate and are pushed in one shot
   via the **Submit Settings** button (mirrors the portal's Save UX and avoids
   rate-limit failures on rapid sequential writes)
-- **Multi-inverter** — pick the Host during setup; change later via Configure
+- **Multi-inverter** — pick the Host during setup; change later via Reconfigure
 - **Automatic recovery** — heartbeat, circuit breaker, scheduled daily reconnect
 
 ## Available services

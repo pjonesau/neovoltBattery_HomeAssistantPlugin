@@ -22,7 +22,7 @@ Requires Home Assistant **2024.11.0** or later.
   the portal's Save button and avoids the API's rate-limit failures on rapid
   sequential writes). A **Discard Pending Settings** button drops them.
 - **Multi-inverter support** — pick which inverter is the Host during setup, change
-  it later via Configure (no need to delete and re-add).
+  it later via Reconfigure (no need to delete and re-add).
 - **Automatic recovery** — heartbeat monitoring, circuit breaker, auto-reconnect.
 
 ## Installation
@@ -57,7 +57,7 @@ Byte-Watt → ⋮ → Reconfigure.
 
 | Platform | Entities |
 |---|---|
-| `sensor` | 30+ sensors covering real-time power, today's energy, cumulative totals, environmental stats |
+| `sensor` | About 30 sensors covering real-time power, today's energy, cumulative totals, environmental stats |
 | `switch` | Grid Charging Battery, Battery Discharge Time Control, Grid Feed-in Function |
 | `number` | Minimum SOC, Battery Charge Cap, Battery Charge Power, Battery Discharge Power, Grid Feed-in Cutoff SOC, Grid Feed-in Time1 Power |
 | `time`   | Charge Start/End, Discharge Start/End, Grid Feed-in Time1 Start/End |

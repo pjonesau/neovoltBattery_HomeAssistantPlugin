@@ -20,7 +20,7 @@ When stale data is detected for three consecutive checks, the system:
 1. Resets the client state (closes and recreates the session)
 2. Forces re-authentication with the ByteWatt servers
 3. Refreshes all sensor data
-4. Implements exponential backoff for retries
+4. If recovery fails, schedules the next attempt sooner rather than later (see below)
 
 - **Location**: `coordinator.py` - `_perform_recovery()` method
 
@@ -42,11 +42,13 @@ We've added a service that users can call to manually trigger the recovery proce
 
 1. **Hysteresis Logic**: The system requires multiple consecutive failures before initiating recovery, preventing oscillation between states.
 
-2. **Exponential Backoff**: Failed recovery attempts are retried with increasing frequency based on the attempt count.
+2. **Faster retries after failure**: A failed recovery is retried after the heartbeat interval divided by the attempt count (capped at 5, never under 30 s), so attempts get *more* frequent while the API stays broken.
 
 3. **Clean Session Management**: Sessions are properly closed and recreated during recovery.
 
 4. **Tracked Metrics**: The coordinator tracks important metrics like successful update time and consecutive stale checks.
+
+5. **Extended-outage notification**: Routine recoveries are silent, but once the API has been unreachable past the extended-outage threshold a single persistent notification is raised, and dismissed automatically when data flows again (`_check_extended_outage`; disabled by `notify_on_recovery: false`).
 
 ## Usage Example
 
@@ -69,10 +71,9 @@ automation:
 
 Potential improvements for the recovery system:
 
-1. Make recovery parameters configurable through Home Assistant UI
-2. Add a persistent notification when recovery is triggered
-3. Implement more sophisticated network diagnostics
-4. Add telemetry for tracking recovery success rates (with user opt-in)
+1. Make recovery parameters configurable through Home Assistant UI (they are read from the entry's options, but the options flow only exposes the scan interval, so the defaults in `const.py` always apply)
+2. Implement more sophisticated network diagnostics
+3. Add telemetry for tracking recovery success rates (with user opt-in)
 
 ## Testing
 

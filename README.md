@@ -11,8 +11,12 @@ Requires Home Assistant **2024.11.0** or later.
 - **Real-time monitoring** — SOC, grid / house / PV / battery power flows
 - **Cumulative + today's energy** — solar generation, feed-in, grid import, charge / discharge
 - **Battery control** — charge / discharge time windows, minimum SOC, charge cap,
-  per-slot charge & discharge power, grid charging on/off, discharge time control on/off
-- **Grid Feed-in Control** — enable/disable, cutoff SOC, Time Period 1 start/end/power
+  per-slot charge & discharge power, grid charging on/off, discharge time control on/off.
+  The integration uses whichever settings API the portal uses for your system
+  (Cyclic Strategy on newer firmware, the legacy charge config otherwise). Legacy
+  systems have no per-slot power, so the two power entities show as unavailable.
+- **Grid Feed-in Control** — enable/disable, cutoff SOC, Time Period 1 start/end/power.
+  The cutoff SOC applies to every feed-in time period and can't be below the minimum SOC.
 - **Staged-edit workflow** — UI changes accumulate in a *pending* store and are
   pushed to the inverter in one shot via the **Submit Settings** button (mirrors
   the portal's Save button and avoids the API's rate-limit failures on rapid
@@ -85,7 +89,8 @@ and submit immediately (no Submit button press needed for services):
 Grid Feed-in:
 
 - `bytewatt.set_grid_feedin_enabled` — toggle Grid Feed-in Function on/off
-- `bytewatt.set_grid_feedin_cutoff_soc` — set discharging cutoff SOC (0–100 %)
+- `bytewatt.set_grid_feedin_cutoff_soc` — set discharging cutoff SOC for every slot
+  (minimum SOC–100 %)
 - `bytewatt.update_grid_feedin_slot` — set start/end/power for slot 1–6
 
 Maintenance:

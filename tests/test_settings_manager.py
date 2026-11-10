@@ -410,3 +410,64 @@ async def test_submit_preserves_pending_after_all_retries_fail(
     # Pending preserved so the user can fix + retry without re-entering.
     assert manager.has_pending() is True
     assert manager.effective_battery("minimum_soc") == 25
+
+
+# ---------------------------------------------------------------------------
+# Legacy charge-config systems have no per-slot power
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def charge_config_cache():
+    return CycleStrategy.from_charge_config({
+        "gridCharge": 0, "ctrDis": 0, "batUseCap": 10, "batHighCap": 100,
+        "timeChaf1": "00:00", "timeChae1": "23:45",
+        "timeDisf1": "00:00", "timeDise1": "00:00",
+    })
+
+
+def test_power_fields_unsupported_on_charge_config(manager, charge_config_cache):
+    manager._battery_cache = charge_config_cache
+    assert manager.battery_field_supported("charge_power") is False
+    assert manager.battery_field_supported("minimum_soc") is True
+    # No fabricated value is shown
+    assert manager.effective_battery("charge_power") is None
+    with pytest.raises(SettingsValidationError):
+        manager.stage_battery("charge_power", 3000)
+
+
+def test_build_battery_payload_rejects_power_on_charge_config(manager, charge_config_cache):
+    """Service one-shot path bypasses stage_battery — the build must still refuse."""
+    manager._battery_cache = charge_config_cache
+    with pytest.raises(SettingsValidationError):
+        manager._build_battery_payload({"discharge_power": 3000})
+
+
+def test_power_fields_supported_on_cycle_strategy(manager, populated_cache):
+    manager._battery_cache = populated_cache
+    assert manager.battery_field_supported("charge_power") is True
+    assert manager.effective_battery("charge_power") == 8000
+
+
+# ---------------------------------------------------------------------------
+# Feed-in cutoff SOC lives per slot in the v2 API
+# ---------------------------------------------------------------------------
+
+def test_feedin_cutoff_applies_to_every_slot(manager, populated_feedin_cache):
+    manager._feedin_cache = populated_feedin_cache
+    merged = manager._build_feedin_payload({"cutoff_soc": 40}, {1: {"power": 1000}})
+    assert [s.feed_cutoff_soc for s in merged.slots] == [40.0, 40.0]
+    assert manager.effective_feedin("cutoff_soc") == 25.0  # cache untouched
+
+
+def test_feedin_new_slot_inherits_existing_cutoff(manager, populated_feedin_cache):
+    manager._feedin_cache = populated_feedin_cache
+    merged = manager._build_feedin_payload({}, {1: {"power": 1000}})
+    assert merged.slots[1].feed_cutoff_soc == 25.0
+
+
+def test_feedin_cutoff_below_minimum_soc_rejected(manager):
+    manager._feedin_cache = GridFeedInSettings.from_api_response({
+        "batUseCap": 10, "feedStrategyVOList": [{"start": "16:00", "end": "18:00"}],
+    })
+    with pytest.raises(SettingsValidationError):
+        manager._build_feedin_payload({"cutoff_soc": 5}, {})

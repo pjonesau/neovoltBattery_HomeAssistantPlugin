@@ -115,6 +115,22 @@ class GridData:
 
 
 # ---------------------------------------------------------------------------
+# Battery settings API variants.
+#
+# The portal asks ``hasNewVersionCharge?id=<host>`` and shows the Cyclic
+# Strategy form (getCycleStrategy / setCycleStrategy) when it returns true,
+# or the legacy charge-config form (getChargeConfigInfo /
+# updateChargeConfigInfo) when it returns false. Both endpoints may answer
+# 200 on a new-version system, but only the one the portal uses holds the
+# live schedule — so the variant must be chosen, not guessed from which
+# endpoint responds.
+# ---------------------------------------------------------------------------
+
+VARIANT_CYCLE_STRATEGY = "cycle_strategy"
+VARIANT_CHARGE_CONFIG = "charge_config"
+
+
+# ---------------------------------------------------------------------------
 # New Cycle Strategy models — matches getCycleStrategy / setCycleStrategy
 # ---------------------------------------------------------------------------
 
@@ -231,6 +247,13 @@ class CycleStrategy:
     raw_data: Dict[str, Any] = field(default_factory=dict)
     # Set by BatterySettingsAPI after fetch; used in to_dict() for the "id" field
     host_system_id: str = ""
+    # Which settings API this was read from, and must be written back to
+    api_variant: str = VARIANT_CYCLE_STRATEGY
+
+    @property
+    def supports_slot_power(self) -> bool:
+        """Charge-config systems have no per-slot charge/discharge power."""
+        return self.api_variant == VARIANT_CYCLE_STRATEGY
 
     @classmethod
     def from_api_response(cls, data: Dict[str, Any]) -> "CycleStrategy":
@@ -289,10 +312,85 @@ class CycleStrategy:
         })
         return result
 
+    @classmethod
+    def from_charge_config(cls, data: Dict[str, Any]) -> "CycleStrategy":
+        """Parse a getChargeConfigInfo response (legacy charge-config systems).
+
+        Only Time 1 of each schedule is modelled, because that is all
+        SettingsManager exposes; Time 2 and every other field round-trip
+        untouched via raw_data. There is no per-slot power on this API.
+        """
+        return cls(
+            grid_charge_cycle=_safe_int(data, "gridCharge", 0),
+            ctr_dis_cycle=_safe_int(data, "ctrDis", 0),
+            bat_use_cap=_safe_float(data, "batUseCap", 10.0),
+            ups_reserve=_safe_int(data, "upsReserve", 0),
+            loadcutout_en=_safe_int(data, "loadcutoutEn", 0),
+            cutoff_soc=_safe_int(data, "cutoffSoc", 0),
+            wakeup_soc=_safe_int(data, "wakeupSoc", 0),
+            is_support_discharge_soc=_safe_bool(data, "isSupportOffGridSocControl", True),
+            is_support_charger_power=False,
+            charge_slots=[ChargeSlot(
+                begin_time=_safe_str(data, "timeChaf1", "00:00"),
+                end_time=_safe_str(data, "timeChae1", "00:00"),
+                charge_limit=_safe_float(data, "batHighCap", 100.0),
+            )],
+            discharge_slots=[DischargeSlot(
+                begin_time=_safe_str(data, "timeDisf1", "00:00"),
+                end_time=_safe_str(data, "timeDise1", "00:00"),
+                charge_limit=_safe_float(data, "batUseCap", 10.0),
+            )],
+            raw_data=dict(data),
+            api_variant=VARIANT_CHARGE_CONFIG,
+        )
+
+    def to_charge_config_dict(self) -> Dict[str, Any]:
+        """Build the PUT payload for updateChargeConfigInfo.
+
+        Mirrors the portal: the full GET response with the edited fields
+        overlaid. Only fields the integration manages are written, so the
+        server's own values (Time 2, UPS reserve, off-grid SOC control,
+        export limits, ...) pass through unchanged.
+        """
+        result = dict(self.raw_data)
+        # The portal defaults null times before submitting; do the same so
+        # the PUT never carries a null schedule.
+        for key in ("timeChaf1", "timeChae1", "timeChaf2", "timeChae2",
+                    "timeDisf1", "timeDise1", "timeDisf2", "timeDise2"):
+            if result.get(key) is None:
+                result[key] = "00:00"
+        result.update({
+            "id": self.host_system_id or result.get("id") or "",
+            "gridCharge": self.grid_charge_cycle,
+            "ctrDis": self.ctr_dis_cycle,
+            "batUseCap": self.bat_use_cap,
+        })
+        if self.charge_slots:
+            slot = self.charge_slots[0]
+            result["timeChaf1"] = slot.begin_time
+            result["timeChae1"] = slot.end_time
+            result["batHighCap"] = slot.charge_limit
+        if self.discharge_slots:
+            slot = self.discharge_slots[0]
+            result["timeDisf1"] = slot.begin_time
+            result["timeDise1"] = slot.end_time
+        return result
+
 
 # ---------------------------------------------------------------------------
-# Grid feed-in models (unchanged)
+# Grid feed-in models — matches getFeedStrategyList / v2/saveFeedStrategy
 # ---------------------------------------------------------------------------
+
+# Portal defaults applied when the server returns null/0 for these fields.
+DEFAULT_FEED_CUTOFF_SOC = 30.0
+DEFAULT_PRECHARGE_SOC = 80.0
+ALL_WEEKDAYS = [7, 1, 2, 3, 4, 5, 6]
+
+
+def _positive_or_none(data: Dict[str, Any], key: str) -> Optional[float]:
+    """Parse a SOC the portal treats as unset when null, empty, or 0."""
+    value = _safe_float(data, key, 0.0)
+    return value if value > 0 else None
 
 @dataclass
 class GridFeedInSlot:
@@ -303,6 +401,9 @@ class GridFeedInSlot:
     end: str = "00:00"
     feed_power: int = 0
     sort: int = 1
+    # Per-slot discharge cutoff (v2); None = server returned null/0
+    feed_cutoff_soc: Optional[float] = None
+    weeks: List[int] = field(default_factory=lambda: list(ALL_WEEKDAYS))
 
     @classmethod
     def from_api_response(cls, data: Dict[str, Any]) -> "GridFeedInSlot":
@@ -313,17 +414,24 @@ class GridFeedInSlot:
             end=_safe_str(data, "end", "00:00"),
             feed_power=_safe_int(data, "feedPower", 0),
             sort=_safe_int(data, "sort", 1),
+            feed_cutoff_soc=_positive_or_none(data, "feedCutoffSoc"),
+            weeks=data.get("weeks") or list(ALL_WEEKDAYS),
         )
 
     def to_dict(self) -> Dict[str, Any]:
+        """Build one feedStrategyDTOList entry for v2/saveFeedStrategy.
+
+        Matches what the portal submits: the form fields plus sysSn/sort.
+        The server-side row ``id`` is not sent — the portal doesn't either.
+        """
         d: Dict[str, Any] = {
             "start": self.start,
             "end": self.end,
             "feedPower": self.feed_power,
             "sort": self.sort,
+            "weeks": self.weeks,
+            "feedCutoffSoc": self.feed_cutoff_soc or DEFAULT_FEED_CUTOFF_SOC,
         }
-        if self.id is not None:
-            d["id"] = self.id
         if self.sys_sn:
             d["sysSn"] = self.sys_sn
         return d
@@ -336,6 +444,9 @@ class GridFeedInSettings:
     battery_en: int = 1
     battery_feed_cutoff_soc: float = 20.0
     precharge_en: int = 0
+    precharge_soc: Optional[float] = None
+    # Minimum SOC; the portal rejects a feed-in cutoff below it
+    bat_use_cap: float = 0.0
     slots: List[GridFeedInSlot] = field(default_factory=list)
 
     @property
@@ -354,14 +465,33 @@ class GridFeedInSettings:
             battery_en=_safe_int(data, "batteryEn", 1),
             battery_feed_cutoff_soc=_safe_float(data, "batteryFeedCutoffSoc", 20.0),
             precharge_en=_safe_int(data, "prechargeEn", 0),
+            precharge_soc=_positive_or_none(data, "prechargeSoc"),
+            bat_use_cap=_safe_float(data, "batUseCap", 0.0),
             slots=slots,
         )
 
+    @property
+    def effective_cutoff_soc(self) -> float:
+        """The cutoff SOC in force: v2 stores it per slot, so Time 1 wins."""
+        if self.slots and self.slots[0].feed_cutoff_soc is not None:
+            return self.slots[0].feed_cutoff_soc
+        return self.battery_feed_cutoff_soc
+
     def to_dict(self) -> Dict[str, Any]:
+        """Build the v2/saveFeedStrategy POST payload, as the portal sends it.
+
+        v2 carries the cutoff SOC per slot, so there is no top-level
+        batteryFeedCutoffSoc. Slots are renumbered 1..n like the portal does.
+        """
+        dto_list = []
+        for index, slot in enumerate(self.slots):
+            dto = slot.to_dict()
+            dto["sort"] = index + 1
+            dto_list.append(dto)
         return {
             "id": self.system_id,
             "batteryEn": self.battery_en,
-            "batteryFeedCutoffSoc": self.battery_feed_cutoff_soc,
+            "feedStrategyDTOList": dto_list,
             "prechargeEn": self.precharge_en,
-            "feedStrategyDTOList": [s.to_dict() for s in self.slots],
+            "prechargeSoc": self.precharge_soc or DEFAULT_PRECHARGE_SOC,
         }

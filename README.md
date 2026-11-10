@@ -1,9 +1,8 @@
 # Byte-Watt Battery Monitor for Home Assistant (fork)
 
 A fork of
-[candreacchio/neovoltBattery_HomeAssistantPlugin](https://github.com/candreacchio/neovoltBattery_HomeAssistantPlugin)
-by Carlo Andreacchio. See upstream for the integration's features, setup, entities
-and services. This page only covers what the fork changes.
+[candreacchio/neovoltBattery_HomeAssistantPlugin](https://github.com/candreacchio/neovoltBattery_HomeAssistantPlugin).
+See upstream for the integration's features, setup, entities and services. This page only covers what the fork changes.
 
 The fork includes everything in upstream up to `80a30e8` (20 July 2026). The
 integration domain is still `bytewatt`, and upstream's existing entities keep their

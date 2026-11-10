@@ -115,6 +115,7 @@ def _client(session: _RouterSession, host_sys_sn: str = HOST_SN) -> neovolt_clie
     client._stack_soc_cache = {}
     client._inverter_list_cache = (dt_util.now(), INVERTERS)
     client._last_host_inverter_data = None
+    client._last_host_soc = None
     return client
 
 

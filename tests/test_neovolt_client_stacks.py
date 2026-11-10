@@ -68,6 +68,7 @@ def _client(session, host_sys_sn="HOST"):
     client._stack_soc_cache = {}
     client._inverter_list_cache = None
     client._last_host_inverter_data = None
+    client._last_host_soc = None
     return client
 
 

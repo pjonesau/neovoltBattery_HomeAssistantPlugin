@@ -26,6 +26,9 @@ DEFAULT_NOTIFY_ON_RECOVERY = True
 DEFAULT_DIAGNOSTICS_MODE = False
 DEFAULT_AUTO_RECONNECT_TIME = "03:30:00"  # 3:30 AM
 DEFAULT_EXTENDED_OUTAGE_THRESHOLD = 1800  # 30 minutes
+# How long the last good Host SOC may stand in for a failed Host read on a
+# parallel system. SOC moves well under 1%/min, so 10 minutes stays close.
+HOST_SOC_MAX_AGE = 600  # 10 minutes
 
 # Services
 SERVICE_SET_DISCHARGE_TIME = "set_discharge_time"  # Legacy service

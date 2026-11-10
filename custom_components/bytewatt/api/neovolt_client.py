@@ -10,7 +10,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.util import dt as dt_util
 
 from .neovolt_auth import EncryptionError, encrypt_password
-from ..const import HOST_PV_INPUTS, PV_INPUT_SENSORS
+from ..const import HOST_PV_INPUTS, HOST_SOC_MAX_AGE, PV_INPUT_SENSORS
 from ..stacks import (
     ROLE_FOLLOWER,
     ROLE_HOST,
@@ -130,6 +130,10 @@ class NeovoltClient:
         # bank-SOC override below — reused for the Host's own stack power so
         # per-stack data doesn't need a second call to the same endpoint.
         self._last_host_inverter_data: Optional[Dict[str, Any]] = None
+        # (fetched_at, soc) of the last successful Host SOC read; stands in
+        # for a failed read so the bank SOC never drops to the sysSn=All
+        # average (see _resolve_bank_soc).
+        self._last_host_soc: Optional[tuple[datetime, float]] = None
         # sysSn -> (fetched_at, StackSocSample); throttles staticsByDay to
         # STACK_SOC_POLL_INTERVAL regardless of how often the coordinator polls.
         self._stack_soc_cache: Dict[str, tuple[datetime, StackSocSample]] = {}
@@ -342,13 +346,9 @@ class NeovoltClient:
 
             if self.host_sys_sn:
                 host_soc = await self._async_get_host_soc(headers)
-                if host_soc is not None:
-                    if host_soc != battery_data.get("soc"):
-                        _LOGGER.debug(
-                            "Using Host SOC %s instead of sysSn=All SOC %s",
-                            host_soc, battery_data.get("soc"),
-                        )
-                    battery_data["soc"] = host_soc
+                battery_data["soc"] = self._resolve_bank_soc(
+                    host_soc, battery_data.get("soc"),
+                )
 
                 # Same response as the SOC above; no request of its own.
                 battery_data[HOST_PV_INPUTS] = extract_pv_inputs(
@@ -569,8 +569,8 @@ class NeovoltClient:
         each inverter still reports its own SOC, parallel batteries stay
         balanced, so the Host's value is still the right one to show.
 
-        Best effort: returns None on any failure so the caller keeps the
-        ``sysSn=All`` value.
+        Best effort: returns None on any failure; ``_resolve_bank_soc``
+        decides what to report instead.
 
         As a side effect, caches the full response under
         ``_last_host_inverter_data`` so the per-stack Host power reading
@@ -603,6 +603,64 @@ class NeovoltClient:
         if isinstance(soc, bool) or not isinstance(soc, (int, float)):
             return None
         return soc
+
+    def _resolve_bank_soc(
+        self, host_soc: Optional[float], all_soc: Optional[float]
+    ) -> Optional[float]:
+        """Pick the bank SOC to report, given this poll's Host and All readings.
+
+        On a parallel system the ``sysSn=All`` SOC is the capacity-weighted
+        average of the Host (whole bank) and followers (0), so it reads low
+        by the followers' share of capacity — 25% for 30 + 10 kWh. It
+        must never be reported there, even for one poll, or the sensor dips
+        whenever the portal fails the Host call (observed 2026-11: nginx
+        404s and 10-16 s stalls).
+
+        - Host read succeeded: report it and remember it.
+        - Host read failed: report the last good Host SOC if it is under
+          HOST_SOC_MAX_AGE old.
+        - Otherwise, on a single-inverter account, All is that inverter's
+          own SOC, so report it; on a parallel (or not yet known) system,
+          report None so the sensor shows unknown rather than a wrong value.
+        """
+        now = dt_util.now()
+        if host_soc is not None:
+            if host_soc != all_soc:
+                _LOGGER.debug(
+                    "Using Host SOC %s instead of sysSn=All SOC %s", host_soc, all_soc,
+                )
+            self._last_host_soc = (now, host_soc)
+            return host_soc
+
+        if self._last_host_soc is not None:
+            fetched_at, last_soc = self._last_host_soc
+            age = (now - fetched_at).total_seconds()
+            if age <= HOST_SOC_MAX_AGE:
+                _LOGGER.warning(
+                    "Host SOC read failed; keeping last Host SOC %s from %d s ago",
+                    last_soc, age,
+                )
+                return last_soc
+
+        if not self._is_parallel_system():
+            return all_soc
+
+        _LOGGER.warning(
+            "Host SOC read failed with no recent Host value; reporting battery "
+            "percentage as unknown instead of the sysSn=All average (%s)",
+            all_soc,
+        )
+        return None
+
+    def _is_parallel_system(self) -> bool:
+        """Return False only when the cached inverter list shows one inverter.
+
+        Unknown (list not fetched yet) counts as parallel, so a failed Host
+        read never reports the blended All SOC on an unverified system.
+        """
+        if self._inverter_list_cache is None:
+            return True
+        return len(self._inverter_list_cache[1]) > 1
 
     async def _async_get_inverter_power(
         self, sys_sn: str, headers: Dict[str, str]

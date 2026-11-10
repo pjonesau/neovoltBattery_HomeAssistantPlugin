@@ -29,12 +29,14 @@ from .const import (
     CONF_NOTIFY_ON_RECOVERY,
     CONF_DIAGNOSTICS_MODE,
     CONF_AUTO_RECONNECT_TIME,
+    CONF_EXTENDED_OUTAGE_THRESHOLD,
     DEFAULT_HEARTBEAT_INTERVAL,
     DEFAULT_MAX_DATA_AGE,
     DEFAULT_STALE_CHECKS_THRESHOLD,
     DEFAULT_NOTIFY_ON_RECOVERY,
     DEFAULT_DIAGNOSTICS_MODE,
     DEFAULT_AUTO_RECONNECT_TIME,
+    DEFAULT_EXTENDED_OUTAGE_THRESHOLD,
     MAX_DIAGNOSTIC_LOGS,
     RECENT_DATA_THRESHOLD,
     STALE_DATA_THRESHOLD,
@@ -47,8 +49,7 @@ from .utilities.diagnostic_service import DiagnosticService
 _LOGGER = logging.getLogger(__name__)
 
 # Notification IDs
-NOTIFICATION_RECOVERY = "bytewatt_recovery"
-NOTIFICATION_ERROR = "bytewatt_error"
+NOTIFICATION_EXTENDED_OUTAGE = "bytewatt_extended_outage"
 
 
 class ByteWattDataUpdateCoordinator(DataUpdateCoordinator):
@@ -94,6 +95,11 @@ class ByteWattDataUpdateCoordinator(DataUpdateCoordinator):
         self._notify_on_recovery = options.get(CONF_NOTIFY_ON_RECOVERY, DEFAULT_NOTIFY_ON_RECOVERY)
         self._diagnostics_mode = options.get(CONF_DIAGNOSTICS_MODE, DEFAULT_DIAGNOSTICS_MODE)
         self._auto_reconnect_time = options.get(CONF_AUTO_RECONNECT_TIME, DEFAULT_AUTO_RECONNECT_TIME)
+        self._extended_outage_threshold = options.get(
+            CONF_EXTENDED_OUTAGE_THRESHOLD, DEFAULT_EXTENDED_OUTAGE_THRESHOLD
+        )
+        self._extended_outage_notified = False
+        self._startup_time = dt_util.utcnow()
         
         if self._diagnostics_mode:
             self.diagnostic_service.enable_diagnostics()
@@ -211,10 +217,6 @@ class ByteWattDataUpdateCoordinator(DataUpdateCoordinator):
                     "result": "fallback_to_cache"
                 })
             
-            # If we got here successfully, ensure any error notifications are dismissed
-            if self._notify_on_recovery:
-                async_dismiss(self.hass, NOTIFICATION_ERROR)
-            
             # Return the data along with connection status
             data = {
                 "battery": self._last_battery_data or {},
@@ -256,14 +258,6 @@ class ByteWattDataUpdateCoordinator(DataUpdateCoordinator):
                     "last_updated": self._last_successful_update.isoformat() if self._last_successful_update else "unknown"
                 }
             else:
-                if self._notify_on_recovery:
-                    async_create(
-                        self.hass,
-                        f"ByteWatt integration error: {err}",
-                        title="ByteWatt Connection Error",
-                        notification_id=NOTIFICATION_ERROR,
-                    )
-
                 raise UpdateFailed(f"Error communicating with API: {err}")
     
     async def start_heartbeat(self) -> None:
@@ -368,16 +362,18 @@ class ByteWattDataUpdateCoordinator(DataUpdateCoordinator):
         
         # No successful update recorded yet
         if self._last_successful_update is None:
+            self._check_extended_outage((current_time - self._startup_time).total_seconds())
             _LOGGER.debug("No successful update recorded yet")
             # Try to trigger an update if we have no data yet
             if self._last_battery_data is None:
                 await self._perform_recovery()
             return
-        
+
         # Calculate age of data
         data_age = current_time - self._last_successful_update
         data_age_seconds = data_age.total_seconds()
-        
+        self._check_extended_outage(data_age_seconds)
+
         # Check if data is stale
         if data_age_seconds > self._max_data_age:
             self._consecutive_stale_checks += 1
@@ -405,7 +401,32 @@ class ByteWattDataUpdateCoordinator(DataUpdateCoordinator):
                 })
                 
             self._consecutive_stale_checks = 0
-    
+
+    def _check_extended_outage(self, outage_seconds: float) -> None:
+        """Notify once when the API has been unreachable past the configured threshold.
+
+        Routine reconnect attempts and transient failures are not notified —
+        only a single alert once the outage crosses ``_extended_outage_threshold``,
+        dismissed automatically once fresh data arrives again.
+        """
+        if not self._notify_on_recovery:
+            return
+
+        if outage_seconds >= self._extended_outage_threshold:
+            if not self._extended_outage_notified:
+                minutes = int(self._extended_outage_threshold // 60)
+                async_create(
+                    self.hass,
+                    f"ByteWatt integration has not been able to reach the API "
+                    f"for over {minutes} minutes.",
+                    title="ByteWatt Extended Outage",
+                    notification_id=NOTIFICATION_EXTENDED_OUTAGE,
+                )
+                self._extended_outage_notified = True
+        elif self._extended_outage_notified:
+            async_dismiss(self.hass, NOTIFICATION_EXTENDED_OUTAGE)
+            self._extended_outage_notified = False
+
     async def _perform_recovery(self, is_scheduled: bool = False) -> None:
         """Perform recovery actions when data updates have stopped.
 
@@ -418,7 +439,8 @@ class ByteWattDataUpdateCoordinator(DataUpdateCoordinator):
         Success is verified by checking that the refresh actually advanced
         _last_successful_update — without that, a refresh that fell back to
         cached data (UpdateFailed swallowed in _async_update_data) would
-        spuriously report "successfully reconnected" to the user.
+        spuriously dismiss the extended-outage notification and skip the
+        backoff retry while the API is still broken.
         """
         if self._recovery_in_progress:
             _LOGGER.debug("Recovery already in progress — skipping duplicate trigger")
@@ -439,14 +461,6 @@ class ByteWattDataUpdateCoordinator(DataUpdateCoordinator):
             "type": recovery_type,
             "timestamp": recovery_start_ts.isoformat(),
         })
-
-        if self._notify_on_recovery:
-            async_create(
-                self.hass,
-                f"ByteWatt integration is attempting to reconnect ({recovery_type} recovery)",
-                title="ByteWatt Recovery",
-                notification_id=NOTIFICATION_RECOVERY,
-            )
 
         try:
             self.circuit_breaker.reset()
@@ -474,14 +488,9 @@ class ByteWattDataUpdateCoordinator(DataUpdateCoordinator):
                     "success": True,
                     "timestamp": dt_util.utcnow().isoformat(),
                 })
-                if self._notify_on_recovery:
-                    async_dismiss(self.hass, NOTIFICATION_RECOVERY)
-                    async_create(
-                        self.hass,
-                        "ByteWatt integration successfully reconnected to the API",
-                        title="ByteWatt Recovery Success",
-                        notification_id=NOTIFICATION_RECOVERY,
-                    )
+                if self._extended_outage_notified:
+                    async_dismiss(self.hass, NOTIFICATION_EXTENDED_OUTAGE)
+                    self._extended_outage_notified = False
             else:
                 # Refresh "completed" without advancing last_successful_update
                 # — the API is still broken. Surface as a failure.
@@ -501,15 +510,6 @@ class ByteWattDataUpdateCoordinator(DataUpdateCoordinator):
             backoff_factor = min(5, self._recovery_attempts)
             next_check_seconds = max(self._heartbeat_interval // backoff_factor, 30)
             _LOGGER.info("Will attempt recovery again in %ds", next_check_seconds)
-
-            if self._notify_on_recovery:
-                async_create(
-                    self.hass,
-                    f"ByteWatt recovery attempt failed: {err}. "
-                    f"Will retry in {next_check_seconds} seconds.",
-                    title="ByteWatt Recovery Failed",
-                    notification_id=NOTIFICATION_RECOVERY,
-                )
 
             # Schedule a sooner retry. Cancel any previous retry first so
             # back-to-back failures don't queue multiple callbacks, and

@@ -13,6 +13,7 @@ CONF_STALE_CHECKS_THRESHOLD = "stale_checks_threshold"
 CONF_NOTIFY_ON_RECOVERY = "notify_on_recovery"
 CONF_DIAGNOSTICS_MODE = "diagnostics_mode"
 CONF_AUTO_RECONNECT_TIME = "auto_reconnect_time"
+CONF_EXTENDED_OUTAGE_THRESHOLD = "extended_outage_threshold"
 
 # Defaults
 DEFAULT_SCAN_INTERVAL = 60  # 1 minute
@@ -24,6 +25,7 @@ DEFAULT_STALE_CHECKS_THRESHOLD = 3
 DEFAULT_NOTIFY_ON_RECOVERY = True
 DEFAULT_DIAGNOSTICS_MODE = False
 DEFAULT_AUTO_RECONNECT_TIME = "03:30:00"  # 3:30 AM
+DEFAULT_EXTENDED_OUTAGE_THRESHOLD = 1800  # 30 minutes
 
 # Services
 SERVICE_SET_DISCHARGE_TIME = "set_discharge_time"  # Legacy service

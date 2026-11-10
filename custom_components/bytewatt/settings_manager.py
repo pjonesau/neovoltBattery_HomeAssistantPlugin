@@ -769,7 +769,6 @@ class SettingsManager:
                     f"Feed-in cutoff SOC {cutoff:.0f}% is below the minimum SOC "
                     f"({merged.bat_use_cap:.0f}%)"
                 )
-            merged.battery_feed_cutoff_soc = cutoff
             for slot in merged.slots:
                 slot.feed_cutoff_soc = cutoff
 
@@ -777,7 +776,7 @@ class SettingsManager:
             while len(merged.slots) <= slot_index:
                 merged.slots.append(GridFeedInSlot(
                     sort=len(merged.slots) + 1,
-                    feed_cutoff_soc=cutoff or None,
+                    feed_cutoff_soc=cutoff,
                 ))
             slot = merged.slots[slot_index]
             if "start" in slot_pending:

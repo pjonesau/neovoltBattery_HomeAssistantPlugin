@@ -237,7 +237,7 @@ def test_effective_battery_pending_overrides_cache(manager, populated_cache):
 def test_effective_feedin_pending_overrides_cache(manager, populated_feedin_cache):
     manager._feedin_cache = populated_feedin_cache
     assert manager.effective_feedin("enabled") is False
-    assert manager.effective_feedin("cutoff_soc") == 25.0
+    assert manager.effective_feedin("cutoff_soc") == 30.0
     manager.stage_feedin("enabled", True)
     assert manager.effective_feedin("enabled") is True
 
@@ -456,13 +456,28 @@ def test_feedin_cutoff_applies_to_every_slot(manager, populated_feedin_cache):
     manager._feedin_cache = populated_feedin_cache
     merged = manager._build_feedin_payload({"cutoff_soc": 40}, {1: {"power": 1000}})
     assert [s.feed_cutoff_soc for s in merged.slots] == [40.0, 40.0]
-    assert manager.effective_feedin("cutoff_soc") == 25.0  # cache untouched
+    assert manager.effective_feedin("cutoff_soc") == 30.0  # cache untouched
 
 
-def test_feedin_new_slot_inherits_existing_cutoff(manager, populated_feedin_cache):
+def test_feedin_unset_cutoff_ignores_top_level(manager, populated_feedin_cache):
+    """The slot's cutoff is unset, so the portal default applies, not the top-level 25."""
+    manager._feedin_cache = populated_feedin_cache
+    assert manager.effective_feedin("cutoff_soc") == 30.0
+
+
+def test_feedin_new_slot_inherits_shown_cutoff(manager, populated_feedin_cache):
     manager._feedin_cache = populated_feedin_cache
     merged = manager._build_feedin_payload({}, {1: {"power": 1000}})
-    assert merged.slots[1].feed_cutoff_soc == 25.0
+    shown = manager.effective_feedin("cutoff_soc")
+    assert [d["feedCutoffSoc"] for d in merged.to_dict()["feedStrategyDTOList"]] == [shown, shown]
+
+
+def test_feedin_slot_edit_keeps_shown_cutoff(manager, populated_feedin_cache):
+    """Editing an unrelated slot field saves the cutoff that was shown."""
+    manager._feedin_cache = populated_feedin_cache
+    shown = manager.effective_feedin("cutoff_soc")
+    merged = manager._build_feedin_payload({}, {0: {"power": 1000}})
+    assert merged.to_dict()["feedStrategyDTOList"][0]["feedCutoffSoc"] == shown
 
 
 def test_feedin_cutoff_below_minimum_soc_rejected(manager):

@@ -1,200 +1,77 @@
-# Byte-Watt Battery Monitor Integration for Home Assistant
+# Byte-Watt Battery Monitor for Home Assistant (fork)
 
-[![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/custom-components/hacs)
+A fork of
+[candreacchio/neovoltBattery_HomeAssistantPlugin](https://github.com/candreacchio/neovoltBattery_HomeAssistantPlugin)
+by Carlo Andreacchio. See upstream for the integration's features, setup, entities
+and services. This page only covers what the fork changes.
 
-Monitor and control a Byte-Watt / Neovolt battery system from Home Assistant.
+The fork includes everything in upstream up to `80a30e8` (20 July 2026). The
+integration domain is still `bytewatt`, and upstream's existing entities keep their
+IDs.
 
-Requires Home Assistant **2024.11.0** or later.
+## How this fork differs from upstream
 
-## Features
+### Battery SOC on parallel systems
 
-- **Real-time monitoring** — SOC, grid / house / PV / battery power flows
-- **Cumulative + today's energy** — solar generation, feed-in, grid import, charge / discharge
-- **Battery control** — charge / discharge time windows, minimum SOC, charge cap,
-  per-slot charge & discharge power, grid charging on/off, discharge time control on/off.
-  The integration uses whichever settings API the portal uses for your system
-  (Cyclic Strategy on newer firmware, the legacy charge config otherwise). Legacy
-  systems have no per-slot power, so the two power entities show as unavailable.
-- **Grid Feed-in Control** — enable/disable, cutoff SOC, Time Period 1 start/end/power.
-  The cutoff SOC applies to every feed-in time period and can't be below the minimum SOC.
-- **Staged-edit workflow** — UI changes accumulate in a *pending* store and are
-  pushed to the inverter in one shot via the **Submit Settings** button (mirrors
-  the portal's Save button and avoids the API's rate-limit failures on rapid
-  sequential writes). A **Discard Pending Settings** button drops them.
-- **Multi-inverter support** — pick which inverter is the Host during setup, change
-  it later via Reconfigure (no need to delete and re-add).
-- **Automatic recovery** — heartbeat monitoring, circuit breaker, auto-reconnect.
+On some parallel systems, the portal reports the whole bank's SOC on the host
+inverter and 0% on each follower. Upstream uses the combined `sysSn=All` reading,
+which averages those by capacity and so reads low.
 
-## Installation
+- **Battery Percentage** comes from the host inverter's own reading. Power and
+  energy figures still come from the combined reading.
+- If the host request fails, the sensor keeps the last good host value for up to
+  10 minutes, then shows *unknown*. It never falls back to the combined value.
+  Each fallback is logged as a warning.
 
-### HACS (recommended)
+### Per-stack battery sensors (new)
 
-1. Install [HACS](https://hacs.xyz/) if you haven't already.
-2. HACS → Integrations → ⋮ → Custom repositories → add this repo URL → Category: Integration.
-3. Install **Byte-Watt Battery Monitor** and restart Home Assistant.
-4. Settings → Devices & Services → Add Integration → search for **Byte-Watt Battery Monitor**.
+In a parallel install, each inverter can only charge or discharge its own battery
+stack. Each inverter gets three sensors:
 
-### Manual
+- **Host / Follower `<serial>` Stack Battery** (%): that stack's own SOC. It comes
+  from the portal's 5-minute history, so it can lag by up to 5 minutes.
+- **… Stack Power** (W): that inverter's own AC power. Negative means charging.
+- **… Stack State**: full, charging, discharging or empty.
 
-Copy `custom_components/bytewatt` into your Home Assistant `custom_components/`
-directory, restart, then add the integration as above.
+Stack capacities come from the portal's inverter list.
 
-## Setup
+### PV1 / PV2 Power sensors (new)
 
-You'll be asked for:
+These show the solar power on each input of the host inverter (`ppv1`, `ppv2`).
+They read from the host request the integration already makes, so there are no
+extra API calls. When there's no reading they show *unavailable*, not 0 W.
 
-- **Username** (your Byte-Watt portal email)
-- **Password**
-- **Scan interval** — 30 s minimum (default 60 s)
+### Battery State sensor (new)
 
-If the account has more than one inverter, a second step asks you to pick the
-**Host inverter**. Single-inverter accounts skip that step automatically.
+Shows Charging, Discharging or Idle, based on battery power (`pbat`).
 
-To change which inverter is the Host later: Settings → Devices & Services →
-Byte-Watt → ⋮ → Reconfigure.
+### Battery settings: the right API for each system
 
-## Entities
+The portal uses one of two settings APIs, depending on the system: **cycle
+strategy** on newer firmware, or the legacy **charge config**. The fork asks the
+portal which one each system uses (`hasNewVersionCharge`), as the portal's own web
+page does. Legacy systems only have Time 1 and no per-slot power, so the Battery
+Charge Power and Battery Discharge Power entities show as unavailable there.
 
-| Platform | Entities |
-|---|---|
-| `sensor` | About 30 sensors covering real-time power, today's energy, cumulative totals, environmental stats |
-| `switch` | Grid Charging Battery, Battery Discharge Time Control, Grid Feed-in Function |
-| `number` | Minimum SOC, Battery Charge Cap, Battery Charge Power, Battery Discharge Power, Grid Feed-in Cutoff SOC, Grid Feed-in Time1 Power |
-| `time`   | Charge Start/End, Discharge Start/End, Grid Feed-in Time1 Start/End |
-| `button` | **Submit Settings**, **Discard Pending Settings** |
+### Grid Feed-in saved through the portal's v2 endpoint
 
-### Submit/Discard workflow
+Feed-in settings are saved through `v2/saveFeedStrategy`, which stores a cutoff
+SOC for each time slot.
 
-Changing a switch / number / time entity **does not** immediately write to the
-inverter. The change is held locally and shown on the entity. Press
-**Submit Settings** to push everything pending in one transaction. Press
-**Discard Pending Settings** to drop staged changes and revert entities to the
-inverter's current state.
+- The **Grid Feed-in Cutoff SOC** entity and the `set_grid_feedin_cutoff_soc`
+  service apply to every slot.
+- A cutoff below the minimum SOC is rejected, as the portal does.
+- An unset cutoff is shown, saved and copied to new slots as 30%, the portal's
+  default.
 
-On a successful submit, a persistent notification confirms. On a failure, the
-notification explains which batch failed and why, and the pending changes are
-**preserved** so you can fix the issue and press Submit again.
+### Fewer outage notifications
 
-## Services
+Upstream raises a persistent notification for every reconnect attempt, transient
+error and recovery. The fork raises one "extended outage" notification once the
+portal has been unreachable for 30 minutes, and dismisses it on recovery.
 
-The legacy "set this one thing" services still work — they stage the change
-and submit immediately (no Submit button press needed for services):
+### Tests and developer docs
 
-- `bytewatt.set_minimum_soc` — set minimum battery SOC (1–100 %)
-- `bytewatt.set_charge_cap` — set charge cap (1–100 %)
-- `bytewatt.set_discharge_start_time` / `set_discharge_time` — discharge window
-- `bytewatt.set_charge_start_time` / `set_charge_end_time` — charge window
-- `bytewatt.update_battery_settings` — set any combination in one call
-
-Grid Feed-in:
-
-- `bytewatt.set_grid_feedin_enabled` — toggle Grid Feed-in Function on/off
-- `bytewatt.set_grid_feedin_cutoff_soc` — set discharging cutoff SOC for every slot
-  (minimum SOC–100 %)
-- `bytewatt.update_grid_feedin_slot` — set start/end/power for slot 1–6
-
-Maintenance:
-
-- `bytewatt.force_reconnect` — drop the session and re-authenticate
-- `bytewatt.health_check` — run network + auth + API diagnostics
-- `bytewatt.toggle_diagnostics` — verbose API logging on/off
-
-All services accept an optional `entry_id` field. If you have a single
-Byte-Watt account configured you can omit it; with multiple accounts it's
-required (the call will tell you which entry_ids exist).
-
-## Example automations
-
-```yaml
-automation:
-  - alias: "Peak — discharge"
-    trigger:
-      platform: state
-      entity_id: sensor.electricity_price_tier
-      to: 'peak'
-    action:
-      service: bytewatt.update_battery_settings
-      data:
-        start_discharge: "17:00"
-        end_discharge: "22:00"
-        minimum_soc: 20
-
-  - alias: "Off-peak — charge"
-    trigger:
-      platform: state
-      entity_id: sensor.electricity_price_tier
-      to: 'off_peak'
-    action:
-      service: bytewatt.update_battery_settings
-      data:
-        start_charge: "01:00"
-        end_charge: "05:00"
-
-  - alias: "Daytime — enable grid feed-in"
-    trigger:
-      platform: time
-      at: "09:00:00"
-    action:
-      service: bytewatt.set_grid_feedin_enabled
-      data:
-        feedin_enabled: true
-```
-
-## Configuration options
-
-After install, Settings → Devices & Services → Byte-Watt → Configure:
-
-- **Scan interval** (seconds) — minimum 30, default 60. Changes apply
-  immediately (the integration reloads on options changes).
-
-## Troubleshooting
-
-- **A repair issue says "Host inverter not configured"** — you have more than
-  one inverter on the account and no Host has been selected. Reconfigure
-  (Settings → Devices & Services → Byte-Watt → ⋮ → Reconfigure) and pick one.
-- **Submit button shows partial failure** — the notification names which
-  batch failed (battery or grid feed-in) and the error reason. Your unsaved
-  changes are kept; fix and Submit again.
-- **Entity shows "unavailable"** — the integration hasn't yet fetched the
-  relevant settings from the API. Usually transient; check logs if it persists.
-- **Cumulative totals briefly drop at midnight** — known timezone quirk of the
-  API; the integration mitigates it by querying through tomorrow's date.
-
-### Real-time field mapping
-
-| API field | Sensor |
-|---|---|
-| `pgrid` | Grid Consumption (W) |
-| `pload` | House Consumption (W) |
-| `pbat` | Battery Power (W) |
-| `ppv` | PV Power (W) |
-| `ppv1` (Host inverter) | PV1 Power (W) |
-| `ppv2` (Host inverter) | PV2 Power (W) |
-| `soc` | Battery Percentage (%) |
-| `epvT` | Total Solar Generation (kWh) |
-| `eout` | Total Feed In (kWh) |
-| `echarge` | Total Battery Charge (kWh) |
-| `edischarge` | Total Battery Discharge (kWh) |
-| `epv2load` | PV Power to House (kWh) |
-| `epvcharge` | PV Charging Battery (kWh) |
-| `eload` | Total House Consumption (kWh) |
-| `egridCharge` | Grid Based Battery Charge (kWh) |
-| `einput` | Grid Power Consumption (kWh) |
-
-Enable debug logging in `configuration.yaml` to see all fields the API returns:
-
-```yaml
-logger:
-  default: info
-  logs:
-    custom_components.bytewatt: debug
-```
-
-## Support
-
-Open an issue at https://github.com/candreacchio/neovoltBattery_HomeAssistantPlugin/issues.
-
-## Credits
-
-Originally built with the Home Assistant community and Claude AI. Subsequent
-contributors are credited in the commit history.
+The fork adds tests for the settings API, the settings manager, per-stack data,
+the PV inputs and the bank SOC. `RECOVERY_SYSTEM.md` describes the current
+recovery behaviour.

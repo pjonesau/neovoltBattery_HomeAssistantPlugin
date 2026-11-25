@@ -212,10 +212,16 @@ class ByteWattConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class ByteWattOptionsFlowHandler(config_entries.OptionsFlow):
-    """Options: scan interval only."""
+    """Options: scan interval only.
 
-    def __init__(self, config_entry):
-        self.config_entry = config_entry
+    The entry is kept on ``_entry`` rather than ``config_entry``: since HA
+    2024.12 ``OptionsFlow.config_entry`` is a property whose setter was removed
+    in 2025.12 (assigning it raises), and before 2024.12 the property doesn't
+    exist, so neither assigning nor relying on it works across 2024.11+.
+    """
+
+    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
+        self._entry = config_entry
 
     async def async_step_init(self, user_input=None):
         if user_input is not None:
@@ -225,7 +231,7 @@ class ByteWattOptionsFlowHandler(config_entries.OptionsFlow):
             data_schema=vol.Schema({
                 vol.Optional(
                     CONF_SCAN_INTERVAL,
-                    default=self.config_entry.options.get(
+                    default=self._entry.options.get(
                         CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
                     ),
                 ): vol.All(vol.Coerce(int), vol.Range(min=MIN_SCAN_INTERVAL)),
